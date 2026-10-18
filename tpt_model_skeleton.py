@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
-# 1. PARAMETERS
+# PARAMETERS
 
 # Rate constants [1/min]
 k_a   = None   # injection site -> blood
@@ -15,13 +15,12 @@ k_BBo = None   # blood -> bone
 k_BoB = None   # bone -> blood
 k_Bou = None   # bone -> receptor-bound/used
 
-# Other
 F     = None   # bioavailability of SC injection
 V_B   = None   # blood volume
 m_PTG = None   # parathyroid gland input rate
 
 
-# 2. DOSE AND INITIAL CONDITIONS
+# DOSE AND INITIAL CONDITIONS
 
 dose = None
 
@@ -34,7 +33,7 @@ m_Bo0 = None   # initial mass in bone
 m0 = [m_SC0, m_B0, m_K0, m_L0, m_Bo0]
 
 
-# 3. MODEL (mass balances)
+# MODEL (mass balances)
 
 def model(t, m):
     m_SC, m_B, m_K, m_L, m_Bo = m
@@ -48,27 +47,28 @@ def model(t, m):
     return [dm_SC, dm_B, dm_K, dm_L, dm_Bo]
 
 
-# 4. SIMULATION
+# SIMULATION
 
 t_start = 0
 t_end   = 24*60
 dt      = 1
 t       = np.arange(0,24*60+dt,dt)   # time points
+# no TPT in system after 240min (in rat model)
 
 sol = solve_ivp(model, (t_start, t_end), m0, t_eval=t)       # solve_ivp(model, (t_start, t_end), m0, t_eval=t)
 m_SC, m_B, m_K, m_L, m_Bo = sol.y
 
-# 5. OUTPUTS
+# OUTPUTS
 
 C_B = m_B / V_B        # blood concentration = m_B / V_B
 t_half = None
 C_max  = np.max(C_B)
 t_max  = t[np.argmax(C_B)]
-AUC    = np.trapezoid(C_B, t) #measures total drug exposure- how much drug the blood saw over the whole period
+AUC    = np.trapezoid(C_B, t) #measures total drug exposure - how much drug the blood saw over the whole period
 
 m_tot = m_SC + m_B + m_K + m_L + m_Bo
 
-# 6. PLOTS
+# PLOTS
 
 # plot mass in each compartment vs time
 # plot blood concentration vs time
