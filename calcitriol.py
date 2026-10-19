@@ -22,4 +22,6 @@ m_CatrB0 = None # blood
 m_CatrL0 = None # liver
 m_CatrG0 = None # gut
 
+# 1 dose of tpt causes 80% increase in calcitriol
+
 mCatr0 = [m_CatrK0, m_CatrB0, m_CatrL0, m_CatrG0]

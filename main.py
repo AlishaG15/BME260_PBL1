@@ -37,7 +37,7 @@ def CatrModel(t, m):
     dm_CatrG = k_LG_Catr*m_CatrL - k_GB_Catr*m_CatrG # gut
 
     return [dm_CatrK, dm_CatrB, dm_CatrL, dm_CatrG]
-
+#calcitriol rises 80% in 1 day
 
 # Calcium
 def CaModel(t, m):
@@ -47,7 +47,7 @@ def CaModel(t, m):
     m_Bo_t    = np.interp(t, sol.t, m_Bo) # TPT in bone at time t
 
     k_GB_t  = k_GB_Ca*(1 + E_Catr*m_CatrG_t) # gut Ca absorption with calcitriol
-    k_KB_t  = k_KB_Ca*(1 + E_TPT_K*m_K_t) # kidney Ca reabsorption with TPT
+    k_KB_t = k_KB_Ca*(1 + E_TPT_K*m_K_t/(m_K_t + H_TPT_K)) # kidney Ca reabsorption with TPT
     k_BoB_t = k_BoB_Ca*(1 + E_TPT_Bo*m_Bo_t) # bone Ca release with TPT
 
     dm_CaI  = -k_IG_Ca*m_CaI # intake
