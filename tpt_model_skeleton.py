@@ -3,56 +3,66 @@ import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
 
-# PARAMETERS
+# Sampled quantities (each drawn once, reused below)
+ka_h      = np.random.uniform(0.34, 1.4)    # injection -> blood, 1/h
+fK        = np.random.uniform(0.42, 0.68)   # fraction of elimination going to kidney
+fL        = np.random.uniform(0.0, 0.10)    # fraction of elimination going to liver
+Qbone_Vb  = np.random.uniform(0.8, 2.0)     # bone plasma flow / V_B, 1/h
+EB        = np.random.uniform(0.2, 0.5)     # bone extraction ratio
+f_abs     = np.random.uniform(0.10, 0.50)   # gut Ca absorption fraction
+f_bone_Q  = np.random.uniform(0.04, 0.10)   # fraction of cardiac output to bone
 
 # TPT rate constants (1/min)
-k_a   = None # injection site -> blood
-k_BK  = None # blood -> kidney
-k_KB  = None # kidney -> blood
-k_Kd  = None # kidney -> degraded
-k_BL  = None # blood -> liver
-k_Ld  = None # liver -> waste
-k_BBo = None # blood -> bone
-k_BoB = None # bone -> blood
-k_Bou = None # bone -> used up
+ke    = 7.4 / 60                 # elimination rate constant (7.4 1/h) = 0.1233 1/min
 
-F     = None # bioavailability
-V_B   = None # blood volume
-m_PTG = 0 # parathyroid input
+k_a   = ka_h / 60                # injection site -> blood
+k_BK  = fK * ke                  # blood -> kidney
+k_KB  = 0.0                      # kidney -> blood (set to 0, <1.2% returned intact)
+k_Kd  = k_BK                     # kidney -> degraded; ASSUMED equal to k_BK so kidney pool doesn't accumulate
+k_BL  = fL * ke                  # blood -> liver
+k_Ld  = k_BL                     # liver -> waste; 100% degraded (ASSUMED same constant)
+k_BBo = Qbone_Vb / 60            # blood -> bone
+k_BoB = (1 - EB) * k_BBo         # bone -> blood
+k_Bou = EB * k_BBo               # bone -> used up (internalized)
+
+F     = 0.95                     # bioavailability
+V_B   = 8.4                      # blood volume, L (0.12 L/kg x 70 kg)
+m_PTG = np.random.uniform(2.3, 5.6)  # parathyroid input, pmol/min
 
 # Calcium rate constants (1/min)
-k_IG_Ca  = None # intake -> gut
-k_GB_Ca  = None # gut -> blood
-k_Gw_Ca  = None # gut -> waste
-k_BK_Ca  = None # blood -> kidney
-k_KB_Ca  = None # kidney -> blood
-k_Ku_Ca  = None # kidney -> urine
-k_BBo_Ca = None # blood -> bone
-k_BoB_Ca = None # bone -> blood
+k_IG_Ca  = 0.05                          # intake -> gut; ASSUMED (~20 min gastric emptying)
+k_GB_Ca  = f_abs * (1/360)               # gut -> blood (ASSUMED 6 h gut transit)
+k_Gw_Ca  = (1 - f_abs) * (1/360)         # gut -> waste
+k_BK_Ca  = 0.118924 / V_B                # blood -> kidney; Qki_in = 0.118924 L/min
+k_KB_Ca  = 0.99 * 1.0                    # kidney -> blood; 99% reabsorbed x ASSUMED turnover of 1 1/min
+k_Ku_Ca  = 0.01 * 1.0                    # kidney -> urine; remaining 1%
+k_BBo_Ca = (f_bone_Q * 5.0) / V_B        # blood -> bone; fraction of ~5 L/min cardiac output
+m_CaB0   = 95 * V_B                      # blood Ca, mg (95 mg/L x V_B); defined here so k_BoB_Ca can use it
+m_CaBo0  = 1.0e6                         # bone Ca, mg (~1 kg)
+k_BoB_Ca = k_BBo_Ca * m_CaB0 / m_CaBo0   # bone -> blood; steady-state flux balance
 
 
 # INITIAL CONDITIONS
 
 # TPT
-dose  = None # TPT dose
+dose  = 4857                # TPT dose, pmol (20 ug / 4117.8 g/mol); ASSUMED standard dose
 
-m_IC0 = None # injection site (F*dose)
-m_B0  = 0 # blood
-m_K0  = 0 # kidney
-m_L0  = 0 # liver
-m_Bo0 = 0 # bone
+m_IC0 = F * dose            # injection site (F*dose)
+m_B0  = 0                   # blood
+m_K0  = 0                   # kidney
+m_L0  = 0                   # liver
+m_Bo0 = 0                   # bone
 
 m0 = [m_IC0, m_B0, m_K0, m_L0, m_Bo0]
 
-# Calcium
-m_CaI0  = None # intake
-m_CaG0  = None # gut
-m_CaB0  = None # blood
-m_CaK0  = 0 # kidney
-m_CaBo0 = None # bone
+# Calcium (mg)
+m_CaI0  = np.random.uniform(1000, 1200)  # intake from food
+m_CaG0  = 0                              # gut; ASSUMED empty at start
+# m_CaB0 defined above (95 mg/L x V_B)
+m_CaK0  = 0                              # kidney
+# m_CaBo0 defined above (1.0e6 mg)
 
 mCa0 = [m_CaI0, m_CaG0, m_CaB0, m_CaK0, m_CaBo0]
-
 
 # MASS BALANCE
 
