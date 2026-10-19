@@ -77,6 +77,7 @@ solCa = solve_ivp(CaModel, (t_start, t_end), mCa0, t_eval=t) # calcium
 m_CaI, m_CaG, m_CaB, m_CaK, m_CaBo = solCa.y
 
 
+
 # OUTPUTS
 
 C_B    = m_B / V_B # TPT blood concentration, pmol/L

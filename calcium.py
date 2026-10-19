@@ -37,3 +37,24 @@ m_CaK0  = 0                              # kidney
 # m_CaBo0 defined above (1.0e6 mg)
 
 mCa0 = [m_CaI0, m_CaG0, m_CaB0, m_CaK0, m_CaBo0]
+
+
+def CaModel(t, m, calcitriol_b, pth_blood):
+    m_CaI, m_CaG, m_CaB, m_CaK, m_CaBo = m
+    m_CatrG_t = np.interp(t, solCatr.t, m_CatrG) # calcitriol in gut at time t
+    m_K_t     = np.interp(t, sol.t, m_K) # TPT in kidney at time t
+    m_Bo_t    = np.interp(t, sol.t, m_Bo) # TPT in bone at time t
+
+    k_GB_t  = k_GB_Ca*(1 + E_Catr*m_CatrG_t) # gut Ca absorption with calcitriol
+    k_KB_t  = k_KB_Ca*(1 + E_TPT_K*m_K_t) # kidney Ca reabsorption with TPT
+    k_BoB_t = k_BoB_Ca*(1 + E_TPT_Bo*m_Bo_t) # bone Ca release with TPT
+
+    dm_CaI  = -k_IG_Ca*m_CaI # intake
+    dm_CaG  = k_IG_Ca*m_CaI - (k_GB_t + k_Gw_Ca)*m_CaG # gut
+    dm_CaB  = k_GB_t*m_CaG + k_KB_t*m_CaK + k_BoB_t*m_CaBo - (k_BK_Ca + k_BBo_Ca)*m_CaB # blood
+    dm_CaK  = k_BK_Ca*m_CaB - (k_KB_t + k_Ku_Ca)*m_CaK # kidney
+    dm_CaBo = k_BBo_Ca*m_CaB - k_BoB_t*m_CaBo # bone
+
+    return [calcium_blood, calcium_gut, calcium_blood]
+
+
