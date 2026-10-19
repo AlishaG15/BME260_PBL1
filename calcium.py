@@ -27,6 +27,7 @@ E_Catr   = None                          # how much calcitriol boosts gut Ca abs
 E_TPT_K  = None                          # how much TPT in kidney boosts Ca reabsorption
 E_TPT_Bo = None                          # how much TPT in bone boosts Ca release from bone
 
+H_TPT_K = None # TPT level for half the max effect to calcium.py
 
 # INITIAL CONDITIONS (mg)
 
