@@ -30,7 +30,7 @@ k_Bx  = (1 - fK - fL) * ke       # blood -> other tissues (degraded); rest of el
 F     = 0.95                     # bioavailability
 V_B   = 0.12 * BW                # TPT volume of distribution, L (0.12 L/kg)
 m_PTG = np.random.uniform(2.3, 5.6)  # parathyroid input, pmol/min
-t_half = None                   # TPT half-life
+t_half = 5.6 # TPT half-life after SC injection (human ~1 h, FDA label); model output to check against
 
 
 # INITIAL CONDITIONS

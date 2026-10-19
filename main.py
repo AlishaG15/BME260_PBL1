@@ -37,7 +37,7 @@ def CatrModel(t, m):
     dm_CatrG = k_LG_Catr*m_CatrL - k_GB_Catr*m_CatrG # gut
 
     return [dm_CatrK, dm_CatrB, dm_CatrL, dm_CatrG]
-
+#calcitriol rises 80% in 1 day
 
 # Calcium
 def CaModel(t, m):
