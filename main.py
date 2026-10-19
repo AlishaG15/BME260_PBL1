@@ -87,9 +87,11 @@ t_max  = t[np.argmax(C_B)] # time of peak
 AUC    = np.trapezoid(C_B, t) # area under curve
 
 m_tot  = m_IC + m_B + m_K + m_L + m_Bo # total TPT
-
 C_CaB  = m_CaB / V_Ca # Ca blood concentration
 
+m_K_max  = np.max(m_K) # peak TPT mass in kidney
+t_K_max  = t[np.argmax(m_K)] # time of kidney peak
+m_K_ng   = m_K * MW_TPT / 1e3 # TPT mass in kidney, ng
 
 # PLOTS
 
@@ -101,6 +103,12 @@ for i in range(5):
 plt.xlabel("Time (min)")
 plt.ylabel("TPT mass")
 plt.legend()
+
+# TPT in kidney
+plt.figure()
+plt.plot(t, m_K)
+plt.xlabel("Time (min)")
+plt.ylabel("TPT mass in kidney (pmol)")
 
 # TPT blood concentration
 plt.figure()
