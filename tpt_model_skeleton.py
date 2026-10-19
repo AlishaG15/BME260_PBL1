@@ -41,6 +41,17 @@ m_CaB0   = 95 * V_B                      # blood Ca, mg (95 mg/L x V_B); defined
 m_CaBo0  = 1.0e6                         # bone Ca, mg (~1 kg)
 k_BoB_Ca = k_BBo_Ca * m_CaB0 / m_CaBo0   # bone -> blood; steady-state flux balance
 
+# Calcitriol rate constants
+k_KB_Catr  = None # kidney -> blood
+k_BK_Catr  = None # blood -> kidney
+k_LG_Catr  = None # liver -> gut
+k_GB_Catr  = None # gut -> blood
+k_BL_Catr  = None # blood -> liver
+k_LB_Catr  = None # liver -> blood
+k_Kd_Catr  = None # kidney -> degraded
+k_p_Catr   = None # production in kidney (mass/min)
+k_TPT_Catr = None # extra production from TPT in kidney
+E_Catr     = None # how much calcitriol boosts gut Ca absorption
 
 # INITIAL CONDITIONS
 
@@ -64,6 +75,17 @@ m_CaK0  = 0                              # kidney
 
 mCa0 = [m_CaI0, m_CaG0, m_CaB0, m_CaK0, m_CaBo0]
 
+<<<<<<< HEAD
+=======
+# calcitriol 
+m_CatrK0 = None # kidney
+m_CatrB0 = None # blood
+m_CatrL0 = None # liver
+m_CatrG0 = None # gut
+
+mCatr0 = [m_CatrK0, m_CatrB0, m_CatrL0, m_CatrG0]
+
+>>>>>>> 05874688889da9bc4c048cfcbabd88dab07f26a7
 # MASS BALANCE
 
 # TPT
@@ -81,16 +103,30 @@ def model(t, m):
 
 # Calcium
 def CaModel(t, m):
+    m_CatrG_t = np.interp(t, solCatr.t, m_CatrG) # calcitriol in gut at time t
+    k_GB = k_GB_Ca*(1 + E_Catr*m_CatrG_t) # gut Ca absorption with calcitriol
+    
     m_CaI, m_CaG, m_CaB, m_CaK, m_CaBo = m
 
     dm_CaI  = -k_IG_Ca*m_CaI # intake
-    dm_CaG  = k_IG_Ca*m_CaI - (k_GB_Ca + k_Gw_Ca)*m_CaG # gut
-    dm_CaB  = k_GB_Ca*m_CaG + k_KB_Ca*m_CaK + k_BoB_Ca*m_CaBo - (k_BK_Ca + k_BBo_Ca)*m_CaB # blood
+    dm_CaG  = k_IG_Ca*m_CaI - (k_GB + k_Gw_Ca)*m_CaG # gut
+    dm_CaB  = k_GB*m_CaG + k_KB_Ca*m_CaK + k_BoB_Ca*m_CaBo - (k_BK_Ca + k_BBo_Ca)*m_CaB # blood
     dm_CaK  = k_BK_Ca*m_CaB - (k_KB_Ca + k_Ku_Ca)*m_CaK # kidney
     dm_CaBo = k_BBo_Ca*m_CaB - k_BoB_Ca*m_CaBo # bone
 
     return [dm_CaI, dm_CaG, dm_CaB, dm_CaK, dm_CaBo]
 
+# Calcitriol
+def CatrModel(t, m):
+    m_CatrK, m_CatrB, m_CatrL, m_CatrG = m
+    m_K_t = np.interp(t, sol.t, m_K) #TPT in kidney at time T
+    
+    dm_CatrK = k_p_Catr + k_TPT_Catr*m_K_t + k_BK_Catr*m_CatrB - (k_KB_Catr + k_Kd_Catr)*m_CatrK # kidney
+    dm_CatrB = k_KB_Catr*m_CatrK + k_LB_Catr*m_CatrL + k_GB_Catr*m_CatrG - (k_BK_Catr + k_BL_Catr)*m_CatrB # blood
+    dm_CatrL = k_BL_Catr*m_CatrB - (k_LB_Catr + k_LG_Catr)*m_CatrL # liver
+    dm_CatrG = k_LG_Catr*m_CatrL - k_GB_Catr*m_CatrG # gut
+
+    return [dm_CatrK, dm_CatrB, dm_CatrL, dm_CatrG]
 
 # SIMULATION
 
@@ -102,6 +138,9 @@ t       = np.arange(t_start, t_end + dt, dt)
 
 sol = solve_ivp(model, (t_start, t_end), m0, t_eval=t) # TPT
 m_IC, m_B, m_K, m_L, m_Bo = sol.y
+
+solCatr = solve_ivp(CatrModel, (t_start, t_end), mCatr0, t_eval=t) # calcitriol
+m_CatrK, m_CatrB, m_CatrL, m_CatrG = solCatr.y
 
 solCa = solve_ivp(CaModel, (t_start, t_end), mCa0, t_eval=t) # calcium
 m_CaI, m_CaG, m_CaB, m_CaK, m_CaBo = solCa.y
