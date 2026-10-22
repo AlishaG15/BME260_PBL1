@@ -1,6 +1,6 @@
 import numpy as np
 from tpt import V_B
-from calcitriol import 
+from calcitriol import *
 
 V_Ca = V_B   # volume for blood Ca (plasma/ECF), L; using V_B until we find a value
 
