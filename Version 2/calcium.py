@@ -27,9 +27,8 @@ half_saturation_concen = 0.316e-9  # 0.316 pmol = 3.16e-10 mmol TPT in kidney.
 n = 1  # Dimensionless Hill coefficient; no replacement name supplied in the PDF.
 
 # Explicit time scales are required to turn dimensionless fractions into rates.
-gut_absorption_turnover_rate = 1.0  # min^-1.
-#Assumption: [equals to the implicit 1 min^-1 multiplying basal_absorb_Ca in the source].
-gut_waste_turnover_rate = None  # min^-1; the original k_Gw_Ca multiplier was blank.
+gut_absorption_turnover_rate = 1 / 360  # min^-1; ASSUMED ~6 h gut transit
+gut_waste_turnover_rate = 1 / 360  # min^-1; same as absorption so 30% absorbed stays 30%
 kidney_turnover_rate = 1.0  # min^-1.
 #Assumption: [equals to the original assumed kidney turnover of 1 min^-1].
 

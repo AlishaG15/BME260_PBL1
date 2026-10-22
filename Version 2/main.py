@@ -88,15 +88,16 @@ def calcium_model(time_min, calcium_amounts_mg, TPT_solution, calcitriol_solutio
         * calcium.gut_absorption_turnover_rate
     )  # min^-1; apply the calcitriol effect once, using the PDF's blood-level formula.
     k_gut_waste = (1 - calcium.basal_absorb_Ca) * calcium.gut_waste_turnover_rate
-    k_kidney_blood_reabs = (
-        calcium.basal_kidney_reabsorb_Ca * calcium.kidney_turnover_rate
-        * (1 + calcium.max_frac_renalreabs_TPT_impact
-           * TPT_kidney_mmol ** calcium.n
-           / (TPT_kidney_mmol ** calcium.n + calcium.half_saturation_concen ** calcium.n))
-    )  # min^-1; the PDF's Hill expression, applied once using the kidney amount.
-    k_kidney_urine_loss = calcium.kidney_turnover_rate - k_kidney_blood_reabs
-    # Unresolved model issue: this table formula can give negative urine loss
-    # if TPT raises reabsorption above total turnover. No clipping is imposed.
+    # Kidney Ca: TPT lowers the 1% that is excreted, so reabsorption can never go above 100%
+    TPT_effect_kidney = (
+        TPT_kidney_mmol ** calcium.n
+        / (TPT_kidney_mmol ** calcium.n + calcium.half_saturation_concen ** calcium.n)
+    )  # Hill term, 0 to 1
+    frac_excreted = (1 - calcium.basal_kidney_reabsorb_Ca) * (
+        1 - calcium.max_frac_renalreabs_TPT_impact * TPT_effect_kidney
+    )  # fraction of kidney Ca lost to urine
+    k_kidney_urine_loss = frac_excreted * calcium.kidney_turnover_rate  # min^-1
+    k_kidney_blood_reabs = (1 - frac_excreted) * calcium.kidney_turnover_rate  # min^-1
     k_bone_to_blood_Ca_with_TPT = calcium.k_bone_to_blood_Ca * (
         1 + calcium.ca_release_incr_TPT * TPT_bone_mmol / calcium.bone_TPT_reference_mmol
     )  # min^-1; the blank reference amount makes the TPT factor dimensionless.
