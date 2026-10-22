@@ -60,7 +60,12 @@ if low_estrogen:
 #   blood:  k_KB*K = k_BK*B        ->  K = (k_BK/k_KB)*B
 #   kidney: P + k_BK*B = (k_KB + k_d)*K  ->  B = P*k_KB/(k_d*k_BK)
 # Old reported values (pmol): kidney 153.5, blood 273.5, liver 891.5, gut 594.5
-k_degrade_calcitriol = math.log(2) / calcitriol_half_life  # min^-1
+# Only the kidney degrades calcitriol, but at steady state the kidney holds only part of the total
+# (kidney : blood : liver = k_BK/k_KB : 1 : k_BL/k_LB), so scale the kidney rate by total/kidney.
+# Then the whole body clears calcitriol with the half-life entered above.
+total_over_kidney = 1 + (k_kidney_to_blood_calcitriol / k_blood_to_kidney_calcitriol) * (
+    1 + k_blood_to_liver_calcitriol / K_liver_to_blood_calcitriol)  # = 3 when all exchange rates are equal
+k_degrade_calcitriol = math.log(2) / calcitriol_half_life * total_over_kidney  # min^-1
 
 Initial_calcitriol_blood = (
     basal_calcitriol_produce_kidney * k_kidney_to_blood_calcitriol

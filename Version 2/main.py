@@ -9,14 +9,18 @@ WHAT IS MODELLED  (three linked compartment models, solved one after another)
 UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L
 
 HOW THE RESULTS ARE READ
-  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). Calcitriol and kidney calcium
-  start at steady state, so they stay flat in the control run. Calcium still drifts in the control run because
-  the one-off food pool (m_Ca_intake) is absorbed during the day and bone exchange is small. The TPT effect is
-  therefore always TREATED minus CONTROL.
+  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). All three models start at a
+  healthy steady state (food Ca comes in at a constant rate and the kidney is sized so Ca in = Ca out), so the
+  control run stays flat. The TPT effect is TREATED minus CONTROL.
+
+SCENARIOS AND UNCERTAINTY
+  DOSE_SCALE picks the dose (1.0 = 20 ug reference). Set RUN_MONTE_CARLO = True to re-draw the uncertain
+  parameters N_RUNS times and compare the SCENARIOS (reference, gray-market overdose, degraded product).
 
 FLAGS FOR YOU: search this file for "ASSUMPTION" and "SWITCH"; they mark every interpretation I had to make.
 """
 
+import importlib
 import numpy as np
 
 np.random.seed(0)  # must come before the parameter imports so the sampled draws repeat
@@ -34,6 +38,17 @@ import calcium
 # 0. SETTINGS  (the only things you should need to change here)
 # =====================================================================
 SIM_MINUTES = 24 * 60              # simulated time
+# SCENARIO: dose relative to the standard 20 ug injection (1.0 = reference dose, 1.35 = gray-market overdose)
+DOSE_SCALE = 1.0
+
+# MONTE CARLO (item 15): re-draw every uncertain parameter N_RUNS times and run each scenario with the same draws.
+RUN_MONTE_CARLO = False
+N_RUNS = 100
+SCENARIOS = {                                   # dose relative to the 20 ug reference
+    "reference (20 ug)": 1.0,
+    "gray-market overdose (+35%)": 1.35,        # problem statement: online semaglutide vials held 29-39% extra
+    "degraded product (-30%)": 0.70,            # ASSUMPTION: example of peptide lost to degradation
+}
 STEP_MIN = 1                       # output time step
 
 # SWITCH: how the Hill half-saturation constant is read.
@@ -60,6 +75,12 @@ INCLUDE_BLOOD_TO_GUT_CALCITRIOL = False
 
 SAVE_FIGURES = True
 LABEL_CALCIUM_PEAK_RISE_MG_PER_DL = 0.4   # FORTEO label: ~+0.4 mg/dL serum Ca, shown on the plot for reference
+
+# SWITCH (item 6/13): scale the three TPT -> calcium effects (bone release, kidney reabsorption, calcitriol -> gut)
+# by ONE factor so the REFERENCE dose raises serum Ca by +0.4 mg/dL (Satterwhite 2010: median +0.4 mg/dL at
+# ~4.25 h, back to baseline by 16-24 h). Found once at the reference dose and held fixed for every scenario.
+CALIBRATE_CA_EFFECT = True
+CA_EFFECT_SCALE = 1.0   # 1.0 = sampled values unchanged; replaced by the calibrated value
 
 TRAPEZOID = getattr(np, "trapezoid", None) or np.trapz   # numpy 2.x renamed trapz
 
@@ -110,7 +131,7 @@ def TPT_model(t, amounts):
     # Kidney: + from blood, - back to blood, - degradation (ASSUMPTION from tpt.py: same rate as blood -> kidney).
     d_kidney = (
         tpt.k_blood_to_kidney_TPT * blood
-        - (tpt.k_kidney_to_blood_TPT + tpt.k_blood_to_kidney_TPT) * kidney
+        - (tpt.k_kidney_to_blood_TPT + tpt.k_kidney_degrade_TPT) * kidney
     )
 
     # Liver: + from blood, - degradation (ASSUMPTION from tpt.py: same rate as blood -> liver).
@@ -136,7 +157,7 @@ def solve_TPT(time_min, injection_scale):
 # =====================================================================
 def calcitriol_model(t, amounts, TPT_kidney_at, max_extra_production, H_kidney):
     kidney, blood, liver, gut = amounts
-    k_degrade_kidney = np.log(2) / calcitriol.calcitriol_half_life   # from the half-life
+    k_degrade_kidney = calcitriol.k_degrade_calcitriol   # from the whole-body half-life (calcitriol.py)
     k_blood_to_gut = calcitriol.k_blood_to_gut_calcitriol if INCLUDE_BLOOD_TO_GUT_CALCITRIOL else 0.0
 
     # TPT in kidney stimulates calcitriol production with a saturating (Hill) response.
@@ -185,22 +206,22 @@ def calcium_rates(TPT_kidney, TPT_bone, calcitriol_blood_mg, H):
     # (a) Calcitriol in blood boosts gut absorption.  E = 1 at the basal calcitriol level.
     calcitriol_concen = calcitriol_blood_mg / tpt.Vol_blood_in_bone          # mg/L, same unit as the basal level
     calcitriol_impact_gut_absorb = np.maximum(
-        1 + calcium.calcitriol_sensitivity * (calcitriol_concen / calcium.calcitriol_basal_level - 1), 0.0)
+        1 + CA_EFFECT_SCALE * calcium.calcitriol_sensitivity * (calcitriol_concen / calcium.calcitriol_basal_level - 1), 0.0)
     k_gut_blood_abs = (calcium.basal_absorb_Ca * calcitriol_impact_gut_absorb
                        * calcium.gut_absorption_turnover_rate)
     k_gut_waste = (1 - calcium.basal_absorb_Ca) * calcium.gut_waste_turnover_rate
 
     # (b) TPT in kidney boosts calcium reabsorption (Hill).
     hill_kidney = hill(TPT_kidney, H["kidney_reabs"], calcium.n)
-    k_kidney_blood_reabs = (calcium.basal_kidney_reabsorb_Ca * calcium.kidney_turnover_rate
-                            * (1 + calcium.max_frac_renalreabs_TPT_impact * hill_kidney))
-    # CHANGED vs your file: reabsorption cannot exceed the kidney turnover rate, otherwise urine loss goes negative.
-    k_kidney_blood_reabs = np.minimum(k_kidney_blood_reabs, calcium.kidney_turnover_rate)
-    k_kidney_urine_loss = calcium.kidney_turnover_rate - k_kidney_blood_reabs
+    # TPT lowers the fraction of kidney Ca lost to urine (99% is already reabsorbed, so only the 1% can change)
+    frac_excreted = (1 - calcium.basal_kidney_reabsorb_Ca) * (
+        1 - CA_EFFECT_SCALE * calcium.max_frac_renalreabs_TPT_impact * hill_kidney)
+    k_kidney_urine_loss = frac_excreted * calcium.kidney_turnover_rate  # min^-1
+    k_kidney_blood_reabs = (1 - frac_excreted) * calcium.kidney_turnover_rate  # min^-1
 
     # (c) TPT in bone boosts calcium release from bone (Hill).
     hill_bone = hill(TPT_bone, H["bone"], calcium.n)
-    k_bone_to_blood_Ca_with_TPT = calcium.k_bone_to_blood_Ca * (1 + calcium.ca_release_incr_TPT * hill_bone)
+    k_bone_to_blood_Ca_with_TPT = calcium.k_bone_to_blood_Ca * (1 + CA_EFFECT_SCALE * calcium.ca_release_incr_TPT * hill_bone)
 
     return dict(gut_abs=k_gut_blood_abs, gut_waste=k_gut_waste, kidney_reabs=k_kidney_blood_reabs,
                 urine=k_kidney_urine_loss, bone_release=k_bone_to_blood_Ca_with_TPT,
@@ -212,7 +233,7 @@ def calcium_model(t, amounts, TPT_kidney_at, TPT_bone_at, calcitriol_blood_at, H
     k = calcium_rates(TPT_kidney_at(t), TPT_bone_at(t), calcitriol_blood_at(t), H)
 
     # Intake (food) -> gut.
-    d_intake = -calcium.k_speed_to_gut_transfer * intake
+    d_intake = calcium.Ca_intake_rate - calcium.k_speed_to_gut_transfer * intake
     # Gut: + from intake, - absorbed into blood, - lost as waste.
     d_gut = calcium.k_speed_to_gut_transfer * intake - (k["gut_abs"] + k["gut_waste"]) * gut
     # Blood: + from gut, kidney (reabsorbed) and bone (release); - to kidney and to bone (formation).
@@ -220,6 +241,7 @@ def calcium_model(t, amounts, TPT_kidney_at, TPT_bone_at, calcitriol_blood_at, H
     d_blood = (
         k["gut_abs"] * gut + k["kidney_reabs"] * kidney + k["bone_release"] * bone
         - (calcium.k_blood_kidney_Ca + calcium.k_blood_to_bone_Ca) * blood
+        - calcium.k_Ca_feedback * (blood - calcium.initial_blood_Ca)  # homeostasis: clears EXTRA Ca (item 6/13)
     )
     # Kidney: + from blood, - reabsorbed to blood, - lost in urine.
     d_kidney = calcium.k_blood_kidney_Ca * blood - (k["kidney_reabs"] + k["urine"]) * kidney
@@ -271,27 +293,55 @@ def calibrate_calcitriol_coefficient(time_min, TPT_treated, TPT_control, H):
         return calcitriol.k_increase_calcitriol_produce_by_TPT, False
 
 
-def run_simulation():
+def calibrate_calcium_effect(time_min, TPT_reference, TPT_control, calcitriol_reference, calcitriol_control, H):
+    """Find CA_EFFECT_SCALE so the reference dose raises blood Ca by LABEL_CALCIUM_PEAK_RISE_MG_PER_DL at its peak."""
+    global CA_EFFECT_SCALE
+    control = solve_calcium(time_min, TPT_control, calcitriol_control, H)   # no TPT, so the scale has no effect
+
+    def peak_rise(scale):
+        global CA_EFFECT_SCALE
+        CA_EFFECT_SCALE = scale
+        treated = solve_calcium(time_min, TPT_reference, calcitriol_reference, H)
+        return np.max(treated.y[2] - control.y[2]) / tpt.Vol_blood_in_bone / 10   # mg/dL
+
+    CA_EFFECT_SCALE = brentq(lambda s: peak_rise(s) - LABEL_CALCIUM_PEAK_RISE_MG_PER_DL, 1e-3, 10, xtol=1e-4)
+    return CA_EFFECT_SCALE
+
+
+def run_simulation(fixed=None):
+    """fixed = None: calibrate H, k_increase and CA_EFFECT_SCALE at the reference dose.
+    fixed = dict(H=..., k_increase=..., ca_scale=...): reuse those values instead (Monte Carlo: calibrated once,
+    on the default draw, then held fixed so the parameter uncertainty shows up in the results)."""
+    global CA_EFFECT_SCALE
     time_min = np.arange(0, SIM_MINUTES + STEP_MIN, STEP_MIN)
 
     # --- Model 1: TPT, treated and control -------------------------------------------------
-    TPT_treated, TPT_control = solve_TPT(time_min, 1.0), solve_TPT(time_min, 0.0)
-    H = half_saturation(TPT_treated)
+    TPT_reference = solve_TPT(time_min, 1.0)          # standard 20 ug dose; ONLY used to set H and k_increase
+    TPT_treated = solve_TPT(time_min, DOSE_SCALE)     # the dose for this scenario
+    TPT_control = solve_TPT(time_min, 0.0)            # no injection
+    H = half_saturation(TPT_reference) if fixed is None else fixed["H"]   # set at the reference dose, then held fixed
 
     # --- Model 2: calcitriol, treated and control ------------------------------------------
     k_increase, calibrated = calcitriol.k_increase_calcitriol_produce_by_TPT, False
     if k_increase is None and not CALIBRATE_CALCITRIOL_TPT:
         raise ValueError("CALIBRATE_CALCITRIOL_TPT is False but calcitriol.k_increase_calcitriol_produce_by_TPT is None.")
-    if CALIBRATE_CALCITRIOL_TPT:
-        k_increase, calibrated = calibrate_calcitriol_coefficient(time_min, TPT_treated, TPT_control, H)
+    if fixed is not None:
+        k_increase, calibrated = fixed["k_increase"], True
+    elif CALIBRATE_CALCITRIOL_TPT:   # calibrated at the REFERENCE dose (item 11), not the scenario dose
+        k_increase, calibrated = calibrate_calcitriol_coefficient(time_min, TPT_reference, TPT_control, H)
     calcitriol_treated = solve_calcitriol(time_min, TPT_treated, k_increase, H["kidney"])
     calcitriol_control = solve_calcitriol(time_min, TPT_control, k_increase, H["kidney"])
 
     # --- Model 3: calcium, treated and control ---------------------------------------------
+    if fixed is not None:
+        CA_EFFECT_SCALE = fixed["ca_scale"]
+    elif CALIBRATE_CA_EFFECT:        # calibrated at the REFERENCE dose (item 6/13), not the scenario dose
+        calcitriol_reference = solve_calcitriol(time_min, TPT_reference, k_increase, H["kidney"])
+        calibrate_calcium_effect(time_min, TPT_reference, TPT_control, calcitriol_reference, calcitriol_control, H)
     calcium_treated = solve_calcium(time_min, TPT_treated, calcitriol_treated, H)
     calcium_control = solve_calcium(time_min, TPT_control, calcitriol_control, H)
 
-    return dict(time=time_min, H=H, k_increase=k_increase, calibrated=calibrated,
+    return dict(time=time_min, H=H, k_increase=k_increase, calibrated=calibrated, ca_scale=CA_EFFECT_SCALE,
                 TPT=TPT_treated, TPT_control=TPT_control,
                 calcitriol=calcitriol_treated, calcitriol_control=calcitriol_control,
                 calcium=calcium_treated, calcium_control=calcium_control)
@@ -324,7 +374,7 @@ def compute_outputs(sim):
     out["Ca_blood_concen_mg_per_L"] = A.y[2] / tpt.Vol_blood_in_bone
     out["Ca_blood_control_mg_per_L"] = Ac.y[2] / tpt.Vol_blood_in_bone
     out["Ca_blood_TPT_effect_mg_per_dL"] = (out["Ca_blood_concen_mg_per_L"] - out["Ca_blood_control_mg_per_L"]) / 10
-    out["bone_Ca_levels_TPT_effect"] = A.y[4]
+    out["bone_Ca_levels_TPT_effect"] = A.y[4] - Ac.y[4]   # treated minus control (was the treated amount only)
 
     # Rates over time (for plots)
     out["rates"] = calcium_rates(T.y[2], T.y[4], C.y[1], H)
@@ -336,14 +386,15 @@ def compute_outputs(sim):
         return np.max(np.abs((total - total[0]) - integral))
 
     r = out["rates"]
-    losses_TPT = (tpt.k_blood_to_kidney_TPT * T.y[2] + tpt.k_bloodtoliver_TPT * T.y[3]
+    losses_TPT = (tpt.k_kidney_degrade_TPT * T.y[2] + tpt.k_bloodtoliver_TPT * T.y[3]
                   + tpt.k_blood_to_other_tissue * T.y[1] + tpt.TPT_to_bone_receptor * T.y[4])
     out["check_TPT_mass_error_mmol"] = balance_error(T.y.sum(axis=0), tpt.PTH_endogenous_blood_mmol_per_min - losses_TPT)
-    k_deg = np.log(2) / calcitriol.calcitriol_half_life
+    k_deg = calcitriol.k_degrade_calcitriol
     max_extra = sim["k_increase"] * H["kidney"]
     production = calcitriol.basal_calcitriol_produce_kidney + max_extra * r["hill_kidney"]
     out["check_calcitriol_mass_error_mg"] = balance_error(C.y.sum(axis=0), production - k_deg * C.y[0])
-    out["check_calcium_mass_error_mg"] = balance_error(A.y.sum(axis=0), -(r["gut_waste"] * A.y[1] + r["urine"] * A.y[3]))
+    out["check_calcium_mass_error_mg"] = balance_error(A.y.sum(axis=0), calcium.Ca_intake_rate - (r["gut_waste"] * A.y[1] + r["urine"] * A.y[3])
+                                                   - calcium.k_Ca_feedback * (A.y[2] - calcium.initial_blood_Ca))
     out["rates"]["production_calcitriol"] = production
     return out
 
@@ -392,7 +443,11 @@ def make_plots(sim, out):
     ax[0, 0].set(title="TPT amount in each compartment", xlabel="Time (min)", ylabel="TPT amount (mmol)")
     ax[0, 0].legend(fontsize=8)
     ax[0, 1].plot(t, out["TPT_blood_concen_ng_per_mL"])
+    peak_t = out["TPT_time_to_peak_min"]                       # time of peak blood TPT (min)
+    peak_c = np.max(out["TPT_blood_concen_ng_per_mL"])         # peak blood TPT (ng/mL)
+    ax[0, 1].axvline(peak_t, color="gray", ls=":", label=f"peak {peak_c:.3f} ng/mL at {peak_t:.0f} min")
     ax[0, 1].set(title="TPT blood concentration", xlabel="Time (min)", ylabel="ng/mL")
+    ax[0, 1].legend(fontsize=8)
     ax[1, 0].plot(t, out["TPT_kidney_ng"])
     ax[1, 0].set(title="TPT in kidney", xlabel="Time (min)", ylabel="ng")
     ax[1, 1].plot(t, out["rates"]["hill_kidney"], label="kidney Hill (treated)")
@@ -441,11 +496,64 @@ def make_plots(sim, out):
 
 
 # =====================================================================
-# 8. RUN
+# 8. MONTE CARLO (item 15)
+# =====================================================================
+def run_monte_carlo():
+    """Calibrate once on the default draw (seed 0) at the reference dose, then re-draw the uncertain parameters
+    N_RUNS times and run every scenario with the calibration held fixed. Prints median [5th-95th percentile]."""
+    global DOSE_SCALE
+    np.random.seed(0)
+    for module in (tpt, calcitriol, calcium):
+        importlib.reload(module)
+    DOSE_SCALE = 1.0
+    nominal = run_simulation()
+    fixed = dict(H=nominal["H"], k_increase=nominal["k_increase"], ca_scale=nominal["ca_scale"])
+    results = {name: {"TPT peak (ng/mL)": [], "Ca rise peak (mg/dL)": [], "Ca peak time (h)": [],
+                      "calcitriol peak (x baseline)": []} for name in SCENARIOS}
+    for run in range(N_RUNS):
+        np.random.seed(run + 1)                      # draw number = seed - 1, so any run can be repeated
+        for module in (tpt, calcitriol, calcium):    # re-import = new random draws
+            importlib.reload(module)
+        try:
+            for name, dose_scale in SCENARIOS.items():
+                DOSE_SCALE = dose_scale
+                sim = run_simulation(fixed)
+                out = compute_outputs(sim)
+                effect = out["Ca_blood_TPT_effect_mg_per_dL"]
+                r = results[name]
+                r["TPT peak (ng/mL)"].append(np.max(out["TPT_blood_concen_ng_per_mL"]))
+                r["Ca rise peak (mg/dL)"].append(np.max(effect))
+                r["Ca peak time (h)"].append(sim["time"][np.argmax(effect)] / 60)
+                r["calcitriol peak (x baseline)"].append(np.max(out["calcitriol_blood_pg_per_mL"]
+                                                                / out["calcitriol_blood_control_pg_per_mL"]))
+        except (ValueError, RuntimeError) as error:  # a draw that cannot be calibrated is skipped and reported
+            print(f"  draw {run} skipped: {error}")
+    print("=" * 78)
+    print(f"MONTE CARLO: {N_RUNS} draws, median [5th - 95th percentile]")
+    for name, r in results.items():
+        print(f"  {name}  (n = {len(r['Ca rise peak (mg/dL)'])})")
+        for label, values in r.items():
+            low, mid, high = np.percentile(values, [5, 50, 95])
+            print(f"      {label:30s} {mid:7.3f}  [{low:.3f} - {high:.3f}]")
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.boxplot([r["Ca rise peak (mg/dL)"] for r in results.values()], whis=(5, 95))
+    ax.set_xticks(range(1, len(results) + 1)); ax.set_xticklabels(list(results), fontsize=8)
+    ax.axhline(LABEL_CALCIUM_PEAK_RISE_MG_PER_DL, color="gray", ls=":", label="label peak (+0.4)")
+    ax.set(title=f"Peak rise in blood calcium, {N_RUNS} Monte Carlo draws", ylabel="mg/dL"); ax.legend()
+    fig.tight_layout()
+    if SAVE_FIGURES:
+        fig.savefig("fig_4_monte_carlo.png", dpi=110)
+    return results
+
+
+# =====================================================================
+# 9. RUN
 # =====================================================================
 if __name__ == "__main__":
     simulation = run_simulation()
     outputs = compute_outputs(simulation)
     print_summary(simulation, outputs)
     make_plots(simulation, outputs)
+    if RUN_MONTE_CARLO:
+        run_monte_carlo()
     plt.show()
