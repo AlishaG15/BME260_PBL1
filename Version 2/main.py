@@ -324,7 +324,7 @@ def compute_outputs(sim):
     out["Ca_blood_concen_mg_per_L"] = A.y[2] / tpt.Vol_blood_in_bone
     out["Ca_blood_control_mg_per_L"] = Ac.y[2] / tpt.Vol_blood_in_bone
     out["Ca_blood_TPT_effect_mg_per_dL"] = (out["Ca_blood_concen_mg_per_L"] - out["Ca_blood_control_mg_per_L"]) / 10
-    out["bone_Ca_TPT_effect_mg"] = A.y[4] - Ac.y[4]
+    out["bone_Ca_levels_TPT_effect"] = A.y[4]
 
     # Rates over time (for plots)
     out["rates"] = calcium_rates(T.y[2], T.y[4], C.y[1], H)
@@ -366,7 +366,7 @@ def print_summary(sim, out):
     print(f"Calcium: CONTROL drift: blood Ca {ca_c[0]/10:.2f} -> {ca_c[-1]/10:.2f} mg/dL over 24 h")
     effect = out["Ca_blood_TPT_effect_mg_per_dL"]
     print(f"  TPT effect on blood Ca (treated - control): peak {effect.max():+.3f} mg/dL at {t[np.argmax(effect)]/60:.1f} h (label ~ +{LABEL_CALCIUM_PEAK_RISE_MG_PER_DL})")
-    print(f"  TPT effect on bone Ca after 24 h: {out['bone_Ca_TPT_effect_mg'][-1]:+.1f} mg")
+    print(f"  TPT effect on bone Ca after 24 h: {out['bone_Ca_levels_TPT_effect'][-1]:+.1f} mg")
     k_abs_basal = calcium.basal_absorb_Ca * calcium.gut_absorption_turnover_rate       # rate at calcitriol effect = 1
     absorbed_share = k_abs_basal / (k_abs_basal + base["gut_waste"])
     print(f"  Gut: absorbed share at basal calcitriol = {absorbed_share:.2f} (basal_absorb_Ca = {calcium.basal_absorb_Ca:.2f})")
@@ -414,7 +414,7 @@ def make_plots(sim, out):
     ax[1].set(title="Blood calcitriol", xlabel="Time (h)", ylabel="pg/mL"); ax[1].legend(fontsize=8)
     ax[2].plot(h, out["rates"]["calcitriol_impact"], label="treated")
     ax[2].plot(h, out["rates_control"]["calcitriol_impact"], "--", label="control")
-    ax[2].set(title="Calcitriol effect on gut absorption (1 = basal)", xlabel="Time (h)"); ax[2].legend(fontsize=8)
+    ax[2].set(title="Calcitriol effect on gut absorption (1 = basal)", xlabel="Time (h)", ylabel="Multiplier (k)"); ax[2].legend(fontsize=8)
     fig.suptitle("2. Calcitriol"); fig.tight_layout(); figures["2_calcitriol"] = fig
 
     # ---- Figure 3: calcium ------------------------------------------------------------------
@@ -423,14 +423,14 @@ def make_plots(sim, out):
         ax[0, 0].plot(t, A.y[index], label=label)
     ax[0, 0].set(title="Calcium amount, treated (bone shown separately)", xlabel="Time (min)", ylabel="mg")
     ax[0, 0].legend(fontsize=8)
-    ax[0, 1].plot(h, out["bone_Ca_TPT_effect_mg"])
+    ax[0, 1].plot(h, out["bone_Ca_levels_TPT_effect"])
     ax[0, 1].set(title="Bone calcium: treated minus control", xlabel="Time (h)", ylabel="mg")
     ax[1, 0].plot(h, out["Ca_blood_concen_mg_per_L"] / 10, label="treated")
     ax[1, 0].plot(h, out["Ca_blood_control_mg_per_L"] / 10, "--", label="control")
     ax[1, 0].set(title="Blood calcium", xlabel="Time (h)", ylabel="mg/dL"); ax[1, 0].legend(fontsize=8)
     ax[1, 1].plot(h, out["Ca_blood_TPT_effect_mg_per_dL"])
     ax[1, 1].axhline(LABEL_CALCIUM_PEAK_RISE_MG_PER_DL, color="gray", ls=":", label="label peak (+0.4)")
-    ax[1, 1].set(title="TPT effect on blood calcium (treated - control)", xlabel="Time (h)", ylabel="mg/dL")
+    ax[1, 1].set(title="TPT effect on blood calcium levels", xlabel="Time (h)", ylabel="mg/dL")
     ax[1, 1].legend(fontsize=8)
     fig.suptitle("3. Calcium"); fig.tight_layout(); figures["3_calcium"] = fig
 
