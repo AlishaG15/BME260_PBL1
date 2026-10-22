@@ -9,18 +9,14 @@ WHAT IS MODELLED  (three linked compartment models, solved one after another)
 UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L
 
 HOW THE RESULTS ARE READ
-  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). All three models start at a
-  healthy steady state (food Ca comes in at a constant rate and the kidney is sized so Ca in = Ca out), so the
-  control run stays flat. The TPT effect is TREATED minus CONTROL.
-
-SCENARIOS AND UNCERTAINTY
-  DOSE_SCALE picks the dose (1.0 = 20 ug reference). Set RUN_MONTE_CARLO = True to re-draw the uncertain
-  parameters N_RUNS times and compare the SCENARIOS (reference, gray-market overdose, degraded product).
+  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). Calcitriol and kidney calcium
+  start at steady state, so they stay flat in the control run. Calcium still drifts in the control run because
+  the one-off food pool (m_Ca_intake) is absorbed during the day and bone exchange is small. The TPT effect is
+  therefore always TREATED minus CONTROL.
 
 FLAGS FOR YOU: search this file for "ASSUMPTION" and "SWITCH"; they mark every interpretation I had to make.
 """
 
-import importlib
 import numpy as np
 
 np.random.seed(0)  # must come before the parameter imports so the sampled draws repeat
@@ -33,6 +29,29 @@ import tpt
 import calcitriol
 import calcium
 
+
+
+
+osteoporosis = True
+renal_failure = False
+low_estrogen = False
+if osteoporosis is True:
+    calcium.calcitriol_sensitivity= np.random.uniform(0.2, 0.6)
+    calcium.intial_bone_Ca = (1.0e6)*(0.844)    #mg; 1 kg = 1,000,000 mg; bone mass reduced by 15.6% in osteoporosis
+    tpt.k_elimination_TPT = tpt.k_elimination_TPT / 2
+    print("Osteoporosis has no assumed calcitriol parameter changes.")
+
+if renal_failure is True:
+    if calcitriol.basal_calcitriol_produce_kidney is None or calcitriol.half_life is None:
+        raise ValueError("Fill in healthy calcitriol production and half-life first.")
+    tpt.k_diffuse_TPT = tpt.k_diffuse_TPT * 1.73
+    tpt.k_eliminantion_TPT=tpt.k_elimination_TPT*(1.77)
+    calcitriol.basal_calcitriol_produce_kidney *= 14.2 / 31.8
+    calcitriol.half_life /= 0.45 / 0.58
+
+if low_estrogen is True:
+    
+    print("Low estrogen has no assumed calcitriol parameter changes.")
 
 # =====================================================================
 # 0. SETTINGS  (the only things you should need to change here)
@@ -49,6 +68,8 @@ SCENARIOS = {                                   # dose relative to the 20 ug ref
     "gray-market overdose (+35%)": 1.35,        # problem statement: online semaglutide vials held 29-39% extra
     "degraded product (-30%)": 0.70,            # ASSUMPTION: example of peptide lost to degradation
 }
+STEP_MIN = 1                       # output time step
+
 STEP_MIN = 1                       # output time step
 
 # SWITCH: how the Hill half-saturation constant is read.
@@ -241,7 +262,6 @@ def calcium_model(t, amounts, TPT_kidney_at, TPT_bone_at, calcitriol_blood_at, H
     d_blood = (
         k["gut_abs"] * gut + k["kidney_reabs"] * kidney + k["bone_release"] * bone
         - (calcium.k_blood_kidney_Ca + calcium.k_blood_to_bone_Ca) * blood
-        - calcium.k_Ca_feedback * (blood - calcium.initial_blood_Ca)  # homeostasis: clears EXTRA Ca (item 6/13)
     )
     # Kidney: + from blood, - reabsorbed to blood, - lost in urine.
     d_kidney = calcium.k_blood_kidney_Ca * blood - (k["kidney_reabs"] + k["urine"]) * kidney
