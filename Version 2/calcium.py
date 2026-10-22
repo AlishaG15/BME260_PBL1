@@ -19,9 +19,9 @@ max_frac_renalreabs_TPT_impact = np.random.uniform(0.1, 1.0)  # Dimensionless.
 ca_release_incr_TPT = np.random.uniform(1.0, 2.9)  # Original range; dimensionless.
 
 basal_absorb_Ca = 0.3  # Dimensionless; assumed basal gut absorption fraction.
-basal_kidney_reabsorb_Ca = 0.99  # Dimensionless; assumed basal reabsorbed fraction.
+basal_kidney_reabsorb_Ca = 0.99  # Dimensionless; starting guess, RECALCULATED below so Ca in = Ca out (~0.96).
 k_speed_to_gut_transfer = 0.05  # min^-1; assumed 20-minute intake-to-gut transfer.
-blood_flow_kidney = 0.118924  # L/min; 118.924 mL/min = 0.118924 L/min.
+blood_flow_kidney = 0.118924  # L/min; glomerular filtration rate (GFR), not total renal blood flow
 cardiac_output = 5.0  # L/min; value from the PDF.
 half_saturation_concen = 0.316e-9  # 0.316 pmol = 3.16e-10 mmol TPT in kidney.
 # The table calls this a concentration, but its stated unit is an amount.
@@ -38,7 +38,8 @@ kidney_turnover_rate = 1.0  # min^-1.
 # that expression dimensionless; its value is left blank rather than guessed.
 bone_TPT_reference_mmol = None  # mmol TPT; needed only for the bone response.
 
-k_blood_kidney_Ca = blood_flow_kidney / Vol_blood_in_bone  # min^-1.
+frac_filterable_Ca = 0.575  # filterable (ionized + complexed) fraction of blood Ca; ~40-45% is protein-bound
+k_blood_kidney_Ca = frac_filterable_Ca * blood_flow_kidney / Vol_blood_in_bone  # min^-1
 # FIX (bone flux): the old rate cardiac_out_frac_bone * cardiac_output / V assumed bone takes up ALL the calcium
 # delivered to it (about 54 g Ca/day). Physiological bone formation/resorption is about 0.3-0.6 g/day, so the
 # delivered calcium is multiplied by an extraction fraction (the share of delivered calcium that is taken up).
@@ -53,9 +54,9 @@ k_blood_to_bone_Ca = bone_perfusion_rate * bone_Ca_extraction  # min^-1
 
 
 # INITIAL CONDITIONS (mg)
-m_Ca_intake = np.random.uniform(1000, 1200)  # Initial food/intake pool, not mg/min.
-initial_gut = 0.0
-#Assumption: [equals to the initial kidney calcium amount]; both start empty.
+Ca_intake_mg_per_day = np.random.uniform(1000, 1200)  # mg/day dietary calcium (same random draw as before)
+Ca_intake_rate = Ca_intake_mg_per_day / 1440  # mg/min; food calcium spread evenly over the day
+initial_gut = 0.0  # replaced below by the steady-state gut amount
 initial_blood_Ca = 95 * Vol_blood_in_bone  # 95 mg/L * 8.4 L = 798 mg.
 intial_bone_Ca = 1.0e6  # 1 kg = 1,000,000 mg; spelling follows the PDF.
 
@@ -74,10 +75,24 @@ initial_kidney_Ca = k_blood_kidney_Ca * initial_blood_Ca / kidney_turnover_rate 
 calcitriol_basal_level_sampled = calcitriol_basal_level  # mg/L; kept for reference, not used.
 calcitriol_basal_level = calcitriol.Initial_calcitriol_blood / Vol_blood_in_bone  # mg/L; effect = 1 at baseline.
 
+# HEALTHY STEADY STATE: intake, gut and kidney start at steady state, and the kidney is sized so that
+# calcium absorbed from the gut = calcium lost in urine (bone in = bone out is already set above).
+initial_intake_Ca = Ca_intake_rate / k_speed_to_gut_transfer  # mg; intake in = intake out
+initial_gut = Ca_intake_rate / (basal_absorb_Ca * gut_absorption_turnover_rate + (1 - basal_absorb_Ca) * gut_waste_turnover_rate)  # mg; gut in = gut out
+filtered_Ca_load = k_blood_kidney_Ca * initial_blood_Ca  # mg/min filtered by the kidney
+basal_kidney_reabsorb_Ca = 1 - basal_absorb_Ca * Ca_intake_rate / filtered_Ca_load  # about 0.965; urine = absorbed
+
 initial_calcium = [
-    m_Ca_intake,
+    initial_intake_Ca,
     initial_gut,
     initial_blood_Ca,
     initial_kidney_Ca,
     intial_bone_Ca,
 ]
+
+# HOMEOSTASIS: when blood Ca rises, the body lowers its own PTH and clears the extra Ca (mostly in urine).
+# Satterwhite 2010 fit serum Ca with an indirect-response model whose return rate is k_out = 0.12 h^-1
+# (half-life ~5.8 h). Without feedback our model returns ~3x slower, so add the missing part:
+k_out_Ca_Satterwhite = 0.12 / 60  # min^-1
+k_Ca_return_no_feedback = (k_blood_kidney_Ca * (1 - basal_kidney_reabsorb_Ca) + k_blood_to_bone_Ca)  # min^-1; how fast extra blood Ca leaves without feedback
+k_Ca_feedback = max(k_out_Ca_Satterwhite - k_Ca_return_no_feedback, 0.0)  # min^-1; extra urine loss of EXCESS Ca
