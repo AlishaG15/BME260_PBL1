@@ -36,8 +36,9 @@ k_blood_to_other_tissue = (
     1 - frac_elim_kidney_TPT - frac_elim_toliver_TPT
 ) * k_elimination_TPT  # min^-1.
 
-PTH_endogenous_blood_mmol_per_min = np.random.uniform(2.3, 5.6) * 1e-9
-# 2.3-5.6 pmol/min = 2.3e-9-5.6e-9 mmol/min; retain the original PTH source.
+PTH_endogenous_blood_mmol_per_min = 0.0  # mmol/min
+# Normal PTH is already built into the basal rates (e.g. 99% kidney Ca reabsorption),
+# so we only track injected TPT. Literature range was 2.3-5.6 pmol/min.
 TPT_half_life = 5.6  # min; retained original comparison value, not used in the ODEs.
 
 

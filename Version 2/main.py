@@ -6,213 +6,446 @@ The PDF's updated names are used wherever supplied; other names describe
 the compound, compartment, and units. Unit corrections are documented locally.
 """
 
+"""TPT -> calcitriol -> calcium model.      Run with:  python main.py
+(keep main.py, tpt.py, calcitriol.py and calcium.py in the same folder)
+
+WHAT IS MODELLED  (three linked compartment models, solved one after another)
+  1. TPT (teriparatide) pharmacokinetics   injection site, blood, kidney, liver, bone
+  2. Calcitriol                            kidney, blood, liver, gut        <- driven by TPT in kidney
+  3. Calcium                               intake, gut, blood, kidney, bone <- driven by TPT (kidney, bone) and calcitriol (blood)
+
+UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L
+
+HOW THE RESULTS ARE READ
+  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). The initial calcium and
+  calcitriol amounts in the parameter files are not a steady state, so both runs drift. The TPT effect is
+  therefore always TREATED minus CONTROL.
+
+FLAGS FOR YOU: search this file for "ASSUMPTION" and "SWITCH"; they mark every interpretation I had to make.
+"""
+
 import numpy as np
 
-np.random.seed(0)  # Set before parameter imports, preserving repeatable draws.
+np.random.seed(0)  # must come before the parameter imports so the sampled draws repeat
 
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+from scipy.optimize import brentq
 
-import tpt 
+import tpt
 import calcitriol
 import calcium
 
 
-def TPT_model(time_min, TPT_amounts_mmol):
-    TPT_injection_mmol, TPT_blood_mmol, TPT_kidney_mmol, TPT_liver_mmol, TPT_bone_mmol = TPT_amounts_mmol
+# =====================================================================
+# 0. SETTINGS  (the only things you should need to change here)
+# =====================================================================
+SIM_MINUTES = 24 * 60              # simulated time
+STEP_MIN = 1                       # output time step
 
-    dTPT_injection = -tpt.k_diffuse_TPT * TPT_injection_mmol
-    dTPT_blood = (
-        tpt.k_diffuse_TPT * TPT_injection_mmol
+# SWITCH: how the Hill half-saturation constant is read.
+#   "fraction_of_peak": H = 0.316 x the peak TPT amount in that organ after the injection (ASSUMPTION, see below)
+#   "table":            H = calcium.half_saturation_concen = 0.316 pmol, exactly as in your file
+# With the table value the Hill terms are saturated at all times (baseline kidney TPT is ~30 pmol), so the
+# injection changes nothing. Run once with "table" to see this for yourself.
+HALF_SATURATION_MODE = "fraction_of_peak"
+HALF_SATURATION_FRACTION = 0.316   # your original code used 0.316 * TPT, i.e. a fraction
+
+# SWITCH: half-saturation constant for the TPT -> kidney Ca REABSORPTION Hill term only (calcitriol production
+# and bone release keep the constants above). Set ONE of these, or leave both None to reuse the kidney value above.
+#   KIDNEY_REABS_H_MMOL:     absolute value in mmol of TPT in kidney (e.g. 5e-9 = 5 pmol)
+#   KIDNEY_REABS_H_FRACTION: fraction of the peak kidney TPT amount after the injection (e.g. 0.5)
+KIDNEY_REABS_H_MMOL = None
+KIDNEY_REABS_H_FRACTION = None
+
+# SWITCH: calibrate the TPT -> calcitriol production coefficient so one dose raises blood calcitriol ~80%.
+CALIBRATE_CALCITRIOL_TPT = True
+CALCITRIOL_RISE_TARGET = 1.8       # peak (treated / control) blood calcitriol within 24 h
+
+# SWITCH: your typed equations have no blood -> gut calcitriol term, so it is left out by default.
+INCLUDE_BLOOD_TO_GUT_CALCITRIOL = False
+
+SAVE_FIGURES = True
+LABEL_CALCIUM_PEAK_RISE_MG_PER_DL = 0.4   # FORTEO label: ~+0.4 mg/dL serum Ca, shown on the plot for reference
+
+TRAPEZOID = getattr(np, "trapezoid", None) or np.trapz   # numpy 2.x renamed trapz
+
+
+# =====================================================================
+# 1. SMALL HELPERS
+# =====================================================================
+def hill(amount, half_saturation, n):
+    """Saturating 0-1 response: amount^n / (amount^n + H^n)."""
+    amount = np.maximum(amount, 0.0)
+    return amount**n / (amount**n + half_saturation**n)
+
+
+def at_time(solution, row):
+    """Return f(t): the solved amount in compartment `row`, linearly interpolated to any time."""
+    return lambda t: np.interp(t, solution.t, solution.y[row])
+
+
+def integrate(rhs, initial, time_min, atol, args=()):
+    """Solve an ODE system and stop with a clear error if the solver fails."""
+    solution = solve_ivp(rhs, (time_min[0], time_min[-1]), initial, t_eval=time_min,
+                         args=args, method="LSODA", rtol=1e-8, atol=atol)
+    if not solution.success:
+        raise RuntimeError(solution.message)
+    return solution
+
+
+# =====================================================================
+# 2. MODEL 1 - TPT PHARMACOKINETICS   (amounts in mmol)
+# =====================================================================
+def TPT_model(t, amounts):
+    injection, blood, kidney, liver, bone = amounts
+
+    # Injection site: TPT leaves into blood.
+    d_injection = -tpt.k_diffuse_TPT * injection
+
+    # Blood: + from injection site, + endogenous PTH, + returns from kidney (0) and bone,
+    #        - to kidney, liver, bone and other tissues.
+    d_blood = (
+        tpt.k_diffuse_TPT * injection
         + tpt.PTH_endogenous_blood_mmol_per_min
-        + tpt.k_kidney_to_blood_TPT * TPT_kidney_mmol
-        + tpt.k_bone_to_blood_TPT * TPT_bone_mmol
+        + tpt.k_kidney_to_blood_TPT * kidney
+        + tpt.k_bone_to_blood_TPT * bone
         - (tpt.k_blood_to_kidney_TPT + tpt.k_bloodtoliver_TPT
-           + tpt.k_blood_to_bone_TPT + tpt.k_blood_to_other_tissue) * TPT_blood_mmol
+           + tpt.k_blood_to_bone_TPT + tpt.k_blood_to_other_tissue) * blood
     )
-    dTPT_kidney = (
-        tpt.k_blood_to_kidney_TPT * TPT_blood_mmol
-        - (tpt.k_kidney_to_blood_TPT + tpt.k_blood_to_kidney_TPT) * TPT_kidney_mmol
-    )  # Kidney degradation uses k_blood_to_kidney_TPT under the equal-rate assumption.
-    dTPT_liver = tpt.k_bloodtoliver_TPT * (TPT_blood_mmol - TPT_liver_mmol)
-    # Liver degradation uses k_bloodtoliver_TPT under the equal-rate assumption.
-    dTPT_bone = (
-        tpt.k_blood_to_bone_TPT * TPT_blood_mmol
-        - (tpt.k_bone_to_blood_TPT + tpt.TPT_to_bone_receptor) * TPT_bone_mmol
+
+    # Kidney: + from blood, - back to blood, - degradation (ASSUMPTION from tpt.py: same rate as blood -> kidney).
+    d_kidney = (
+        tpt.k_blood_to_kidney_TPT * blood
+        - (tpt.k_kidney_to_blood_TPT + tpt.k_blood_to_kidney_TPT) * kidney
     )
-    return [dTPT_injection, dTPT_blood, dTPT_kidney, dTPT_liver, dTPT_bone]
+
+    # Liver: + from blood, - degradation (ASSUMPTION from tpt.py: same rate as blood -> liver).
+    d_liver = tpt.k_bloodtoliver_TPT * blood - tpt.k_bloodtoliver_TPT * liver
+
+    # Bone: + from blood, - back to blood, - lost to bone receptors (internalised).
+    d_bone = (
+        tpt.k_blood_to_bone_TPT * blood
+        - (tpt.k_bone_to_blood_TPT + tpt.TPT_to_bone_receptor) * bone
+    )
+    return [d_injection, d_blood, d_kidney, d_liver, d_bone]
 
 
-def calcitriol_model(time_min, calcitriol_amounts_mg, TPT_solution):
-    calcitriol_kidney_mg, calcitriol_blood_mg, calcitriol_liver_mg, calcitriol_gut_mg = calcitriol_amounts_mg
-    TPT_kidney_mmol = np.interp(time_min, TPT_solution.t, TPT_solution.y[2])
-    k_degrade_kidney_calcitriol = np.log(2) / calcitriol.calcitriol_half_life
+def solve_TPT(time_min, injection_scale):
+    """injection_scale = 1: injected run;  0: control (endogenous PTH only)."""
+    initial = list(tpt.initial_TPT)
+    initial[0] *= injection_scale
+    return integrate(TPT_model, initial, time_min, atol=1e-18)
 
-    dcalcitriol_kidney = (
+
+# =====================================================================
+# 3. MODEL 2 - CALCITRIOL   (amounts in mg)
+# =====================================================================
+def calcitriol_model(t, amounts, TPT_kidney_at, max_extra_production, H_kidney):
+    kidney, blood, liver, gut = amounts
+    k_degrade_kidney = np.log(2) / calcitriol.calcitriol_half_life   # from the half-life
+    k_blood_to_gut = calcitriol.k_blood_to_gut_calcitriol if INCLUDE_BLOOD_TO_GUT_CALCITRIOL else 0.0
+
+    # TPT in kidney stimulates calcitriol production with a saturating (Hill) response.
+    # ASSUMPTION: max extra production = k_increase * H, so k_increase is the slope at low TPT (n = 1).
+    TPT_stimulated_production = max_extra_production * hill(TPT_kidney_at(t), H_kidney, calcium.n)
+
+    # Kidney: + basal production, + TPT-stimulated production, + from blood, - to blood, - degradation.
+    d_kidney = (
         calcitriol.basal_calcitriol_produce_kidney
-        + calcitriol.k_increase_calcitriol_produce_by_TPT * TPT_kidney_mmol
-        + calcitriol.k_blood_to_kidney_calcitriol * calcitriol_blood_mg
-        - (calcitriol.k_kidney_to_blood_calcitriol + k_degrade_kidney_calcitriol) * calcitriol_kidney_mg
+        + TPT_stimulated_production
+        + calcitriol.k_blood_to_kidney_calcitriol * blood
+        - (calcitriol.k_kidney_to_blood_calcitriol + k_degrade_kidney) * kidney
     )
-    dcalcitriol_blood = (
-        calcitriol.k_kidney_to_blood_calcitriol * calcitriol_kidney_mg
-        + calcitriol.K_liver_to_blood_calcitriol * calcitriol_liver_mg
-        + calcitriol.k_gut_to_blood_calcitriol * calcitriol_gut_mg
-        - (calcitriol.k_blood_to_kidney_calcitriol + calcitriol.k_blood_to_liver_calcitriol) * calcitriol_blood_mg
+    # Blood: + from kidney, liver, gut; - to kidney, liver (and gut if switched on).
+    d_blood = (
+        calcitriol.k_kidney_to_blood_calcitriol * kidney
+        + calcitriol.K_liver_to_blood_calcitriol * liver
+        + calcitriol.k_gut_to_blood_calcitriol * gut
+        - (calcitriol.k_blood_to_kidney_calcitriol + calcitriol.k_blood_to_liver_calcitriol + k_blood_to_gut) * blood
     )
-    dcalcitriol_liver = (
-        calcitriol.k_blood_to_liver_calcitriol * calcitriol_blood_mg
-        - (calcitriol.K_liver_to_blood_calcitriol + calcitriol.k_liver_to_gut_calcitriol) * calcitriol_liver_mg
+    # Liver: + from blood, - back to blood (reabsorption), - to gut.
+    d_liver = (
+        calcitriol.k_blood_to_liver_calcitriol * blood
+        - (calcitriol.K_liver_to_blood_calcitriol + calcitriol.k_liver_to_gut_calcitriol) * liver
     )
-    dcalcitriol_gut = (
-        calcitriol.k_liver_to_gut_calcitriol * calcitriol_liver_mg
-        - calcitriol.k_gut_to_blood_calcitriol * calcitriol_gut_mg
+    # Gut: + from liver (bile) and blood (if switched on), - to blood.
+    d_gut = (
+        calcitriol.k_liver_to_gut_calcitriol * liver
+        + k_blood_to_gut * blood
+        - calcitriol.k_gut_to_blood_calcitriol * gut
     )
-    return [dcalcitriol_kidney, dcalcitriol_blood, dcalcitriol_liver, dcalcitriol_gut]
+    return [d_kidney, d_blood, d_liver, d_gut]
 
 
-def calcium_model(time_min, calcium_amounts_mg, TPT_solution, calcitriol_solution):
-    Ca_intake_mg, Ca_gut_mg, Ca_blood_mg, Ca_kidney_mg, Ca_bone_mg = calcium_amounts_mg
-    calcitriol_concen = (
-        np.interp(time_min, calcitriol_solution.t, calcitriol_solution.y[1])
-        / tpt.Vol_blood_in_bone
-    )  # Blood calcitriol in mg/L, matching calcitriol_basal_level.
-    TPT_kidney_mmol = np.interp(time_min, TPT_solution.t, TPT_solution.y[2])
-    TPT_bone_mmol = np.interp(time_min, TPT_solution.t, TPT_solution.y[4])
+def solve_calcitriol(time_min, TPT_solution, k_increase, H_kidney):
+    return integrate(calcitriol_model, calcitriol.initial_calcitriol, time_min, atol=1e-14,
+                     args=(at_time(TPT_solution, 2), k_increase * H_kidney, H_kidney))
 
-    calcitriol_impact_gut_absorb = 1 + calcium.calcitriol_sensitivity * (
-        calcitriol_concen / calcium.calcitriol_basal_level - 1
-    )
-    k_gut_blood_abs = (
-        calcium.basal_absorb_Ca * calcitriol_impact_gut_absorb
-        * calcium.gut_absorption_turnover_rate
-    )  # min^-1; apply the calcitriol effect once, using the PDF's blood-level formula.
+
+# =====================================================================
+# 4. MODEL 3 - CALCIUM   (amounts in mg)
+# =====================================================================
+def calcium_rates(TPT_kidney, TPT_bone, calcitriol_blood_mg, H):
+    """Every time-varying calcium rate constant (min^-1), in one place.
+    Works for single values (inside the ODE) and for whole arrays (diagnostics and plots)."""
+    # (a) Calcitriol in blood boosts gut absorption.  E = 1 at the basal calcitriol level.
+    calcitriol_concen = calcitriol_blood_mg / tpt.Vol_blood_in_bone          # mg/L, same unit as the basal level
+    calcitriol_impact_gut_absorb = np.maximum(
+        1 + calcium.calcitriol_sensitivity * (calcitriol_concen / calcium.calcitriol_basal_level - 1), 0.0)
+    k_gut_blood_abs = (calcium.basal_absorb_Ca * calcitriol_impact_gut_absorb
+                       * calcium.gut_absorption_turnover_rate)
     k_gut_waste = (1 - calcium.basal_absorb_Ca) * calcium.gut_waste_turnover_rate
-    k_kidney_blood_reabs = (
-        calcium.basal_kidney_reabsorb_Ca * calcium.kidney_turnover_rate
-        * (1 + calcium.max_frac_renalreabs_TPT_impact
-           * TPT_kidney_mmol ** calcium.n
-           / (TPT_kidney_mmol ** calcium.n + calcium.half_saturation_concen ** calcium.n))
-    )  # min^-1; the PDF's Hill expression, applied once using the kidney amount.
+
+    # (b) TPT in kidney boosts calcium reabsorption (Hill).
+    hill_kidney = hill(TPT_kidney, H["kidney_reabs"], calcium.n)
+    k_kidney_blood_reabs = (calcium.basal_kidney_reabsorb_Ca * calcium.kidney_turnover_rate
+                            * (1 + calcium.max_frac_renalreabs_TPT_impact * hill_kidney))
+    # CHANGED vs your file: reabsorption cannot exceed the kidney turnover rate, otherwise urine loss goes negative.
+    k_kidney_blood_reabs = np.minimum(k_kidney_blood_reabs, calcium.kidney_turnover_rate)
     k_kidney_urine_loss = calcium.kidney_turnover_rate - k_kidney_blood_reabs
-    # Unresolved model issue: this table formula can give negative urine loss
-    # if TPT raises reabsorption above total turnover. No clipping is imposed.
-    k_bone_to_blood_Ca_with_TPT = calcium.k_bone_to_blood_Ca * (
-        1 + calcium.ca_release_incr_TPT * TPT_bone_mmol / calcium.bone_TPT_reference_mmol
-    )  # min^-1; the blank reference amount makes the TPT factor dimensionless.
 
-    dCa_intake = -calcium.k_speed_to_gut_transfer * Ca_intake_mg
-    dCa_gut = (
-        calcium.k_speed_to_gut_transfer * Ca_intake_mg
-        - (k_gut_blood_abs + k_gut_waste) * Ca_gut_mg
-    )
-    dCa_blood = (
-        k_gut_blood_abs * Ca_gut_mg + k_kidney_blood_reabs * Ca_kidney_mg
-        + k_bone_to_blood_Ca_with_TPT * Ca_bone_mg
-        - (calcium.k_blood_kidney_Ca + calcium.k_blood_to_bone_Ca) * Ca_blood_mg
-    )
-    dCa_kidney = (
-        calcium.k_blood_kidney_Ca * Ca_blood_mg
-        - (k_kidney_blood_reabs + k_kidney_urine_loss) * Ca_kidney_mg
-    )
-    dCa_bone = calcium.k_blood_to_bone_Ca * Ca_blood_mg - k_bone_to_blood_Ca_with_TPT * Ca_bone_mg
-    return [dCa_intake, dCa_gut, dCa_blood, dCa_kidney, dCa_bone]
+    # (c) TPT in bone boosts calcium release from bone (Hill).
+    hill_bone = hill(TPT_bone, H["bone"], calcium.n)
+    k_bone_to_blood_Ca_with_TPT = calcium.k_bone_to_blood_Ca * (1 + calcium.ca_release_incr_TPT * hill_bone)
+
+    return dict(gut_abs=k_gut_blood_abs, gut_waste=k_gut_waste, kidney_reabs=k_kidney_blood_reabs,
+                urine=k_kidney_urine_loss, bone_release=k_bone_to_blood_Ca_with_TPT,
+                calcitriol_impact=calcitriol_impact_gut_absorb, hill_kidney=hill_kidney, hill_bone=hill_bone)
 
 
-def check_required_values():
-    """Report intentional blanks together, before attempting any integration."""
-    missing = [
-        "calcitriol." + name for name, value in vars(calcitriol).items()
-        if value is None and name != "k_blood_to_gut_calcitriol"
-    ]
-    missing.extend("calcium." + name for name, value in vars(calcium).items() if value is None)
-    if missing:
-        raise ValueError("Fill in these blank values in the indicated units:\n  " + "\n  ".join(missing))
-    if calcitriol.calcitriol_half_life <= 0 or calcium.bone_TPT_reference_mmol <= 0:
-        raise ValueError("Calcitriol half-life and bone TPT reference amount must be positive.")
+def calcium_model(t, amounts, TPT_kidney_at, TPT_bone_at, calcitriol_blood_at, H):
+    intake, gut, blood, kidney, bone = amounts
+    k = calcium_rates(TPT_kidney_at(t), TPT_bone_at(t), calcitriol_blood_at(t), H)
+
+    # Intake (food) -> gut.
+    d_intake = -calcium.k_speed_to_gut_transfer * intake
+    # Gut: + from intake, - absorbed into blood, - lost as waste.
+    d_gut = calcium.k_speed_to_gut_transfer * intake - (k["gut_abs"] + k["gut_waste"]) * gut
+    # Blood: + from gut, kidney (reabsorbed) and bone (release); - to kidney and to bone (formation).
+    # Bone formation flux = k_blood_to_bone_Ca * blood Ca, i.e. more calcium around bone -> more formation.
+    d_blood = (
+        k["gut_abs"] * gut + k["kidney_reabs"] * kidney + k["bone_release"] * bone
+        - (calcium.k_blood_kidney_Ca + calcium.k_blood_to_bone_Ca) * blood
+    )
+    # Kidney: + from blood, - reabsorbed to blood, - lost in urine.
+    d_kidney = calcium.k_blood_kidney_Ca * blood - (k["kidney_reabs"] + k["urine"]) * kidney
+    # Bone: + formation from blood, - release to blood.
+    d_bone = calcium.k_blood_to_bone_Ca * blood - k["bone_release"] * bone
+    return [d_intake, d_gut, d_blood, d_kidney, d_bone]
+
+
+def solve_calcium(time_min, TPT_solution, calcitriol_solution, H):
+    return integrate(calcium_model, calcium.initial_calcium, time_min, atol=1e-6,
+                     args=(at_time(TPT_solution, 2), at_time(TPT_solution, 4), at_time(calcitriol_solution, 1), H))
+
+
+# =====================================================================
+# 5. SIMULATION DRIVER
+# =====================================================================
+def half_saturation(TPT_treated):
+    """Hill half-saturation constants in mmol TPT, per organ / effect."""
+    if HALF_SATURATION_MODE == "table":
+        H = {"kidney": calcium.half_saturation_concen, "bone": calcium.half_saturation_concen}
+    else:
+        H = {"kidney": HALF_SATURATION_FRACTION * TPT_treated.y[2].max(),
+             "bone": HALF_SATURATION_FRACTION * TPT_treated.y[4].max()}
+    # Separate constant for kidney calcium reabsorption (defaults to the kidney value).
+    if KIDNEY_REABS_H_MMOL is not None:
+        H["kidney_reabs"] = KIDNEY_REABS_H_MMOL
+    elif KIDNEY_REABS_H_FRACTION is not None:
+        H["kidney_reabs"] = KIDNEY_REABS_H_FRACTION * TPT_treated.y[2].max()
+    else:
+        H["kidney_reabs"] = H["kidney"]
+    return H
+
+
+def calibrate_calcitriol_coefficient(time_min, TPT_treated, TPT_control, H):
+    """Find k_increase_calcitriol_produce_by_TPT so peak (treated / control) blood calcitriol = target."""
+    def peak_ratio(k_increase):
+        treated = solve_calcitriol(time_min, TPT_treated, k_increase, H["kidney"])
+        control = solve_calcitriol(time_min, TPT_control, k_increase, H["kidney"])
+        return np.max(treated.y[1] / control.y[1])
+
+    try:
+        return brentq(lambda k: peak_ratio(k) - CALCITRIOL_RISE_TARGET, 1e-2, 1e9, xtol=1e-3, rtol=1e-6), True
+    except ValueError:
+        return calcitriol.k_increase_calcitriol_produce_by_TPT, False
 
 
 def run_simulation():
-    check_required_values()
-    time_start_min = 0
-    time_end_min = 24 * 60  # 24 h = 1440 min.
-    time_step_min = 1
-    time_min = np.arange(time_start_min, time_end_min + time_step_min, time_step_min)
+    time_min = np.arange(0, SIM_MINUTES + STEP_MIN, STEP_MIN)
 
-    TPT_solution = solve_ivp(
-        TPT_model, (time_start_min, time_end_min), tpt.initial_TPT,
-        t_eval=time_min, rtol=1e-6, atol=1e-15,
-    )  # Tight mmol tolerance avoids treating the small TPT amounts as numerical zero.
-    if not TPT_solution.success:
-        raise RuntimeError(TPT_solution.message)
-    calcitriol_solution = solve_ivp(
-        calcitriol_model, (time_start_min, time_end_min), calcitriol.initial_calcitriol,
-        args=(TPT_solution,), t_eval=time_min, rtol=1e-6, atol=1e-12,
-    )
-    if not calcitriol_solution.success:
-        raise RuntimeError(calcitriol_solution.message)
-    calcium_solution = solve_ivp(
-        calcium_model, (time_start_min, time_end_min), calcium.initial_calcium,
-        args=(TPT_solution, calcitriol_solution), t_eval=time_min, rtol=1e-6, atol=1e-8,
-    )
-    if not calcium_solution.success:
-        raise RuntimeError(calcium_solution.message)
+    # --- Model 1: TPT, treated and control -------------------------------------------------
+    TPT_treated, TPT_control = solve_TPT(time_min, 1.0), solve_TPT(time_min, 0.0)
+    H = half_saturation(TPT_treated)
 
-    # OUTPUTS: retain primary units and label optional ng conversions explicitly.
-    TPT_blood_concen = TPT_solution.y[1] / tpt.Vol_blood_in_bone  # mmol/L.
-    TPT_blood_concen_ng_per_mL = TPT_blood_concen * tpt.mol_weight_TPT * 1000
-    # mmol/L * mg/mmol = mg/L; 1 mg/L = 1000 ng/mL.
-    TPT_peak_blood_concen = np.max(TPT_blood_concen)  # mmol/L.
-    TPT_time_to_peak_min = time_min[np.argmax(TPT_blood_concen)]
-    TPT_blood_AUC = np.trapezoid(TPT_blood_concen, time_min)  # mmol*min/L.
-    total_TPT_mmol = np.sum(TPT_solution.y, axis=0)
-    Ca_blood_concen = calcium_solution.y[2] / tpt.Vol_blood_in_bone  # mg/L.
-    TPT_peak_kidney_mmol = np.max(TPT_solution.y[2])
-    TPT_time_to_kidney_peak_min = time_min[np.argmax(TPT_solution.y[2])]
-    TPT_kidney_ng = TPT_solution.y[2] * tpt.mol_weight_TPT * 1e6  # 1 mg = 1e6 ng.
+    # --- Model 2: calcitriol, treated and control ------------------------------------------
+    k_increase, calibrated = calcitriol.k_increase_calcitriol_produce_by_TPT, False
+    if CALIBRATE_CALCITRIOL_TPT:
+        k_increase, calibrated = calibrate_calcitriol_coefficient(time_min, TPT_treated, TPT_control, H)
+    calcitriol_treated = solve_calcitriol(time_min, TPT_treated, k_increase, H["kidney"])
+    calcitriol_control = solve_calcitriol(time_min, TPT_control, k_increase, H["kidney"])
 
-    # PLOTS
-    plt.figure()
+    # --- Model 3: calcium, treated and control ---------------------------------------------
+    calcium_treated = solve_calcium(time_min, TPT_treated, calcitriol_treated, H)
+    calcium_control = solve_calcium(time_min, TPT_control, calcitriol_control, H)
+
+    return dict(time=time_min, H=H, k_increase=k_increase, calibrated=calibrated,
+                TPT=TPT_treated, TPT_control=TPT_control,
+                calcitriol=calcitriol_treated, calcitriol_control=calcitriol_control,
+                calcium=calcium_treated, calcium_control=calcium_control)
+
+
+# =====================================================================
+# 6. OUTPUTS AND CHECKS
+# =====================================================================
+def compute_outputs(sim):
+    t, H = sim["time"], sim["H"]
+    T, Tc = sim["TPT"], sim["TPT_control"]
+    C, Cc = sim["calcitriol"], sim["calcitriol_control"]
+    A, Ac = sim["calcium"], sim["calcium_control"]
+    out = {}
+
+    # TPT outputs (mmol/L; ng/mL: mmol/L * mg/mmol = mg/L, and 1 mg/L = 1000 ng/mL)
+    out["TPT_blood_concen_mmol_per_L"] = T.y[1] / tpt.Vol_blood_in_bone
+    out["TPT_blood_concen_ng_per_mL"] = out["TPT_blood_concen_mmol_per_L"] * tpt.mol_weight_TPT * 1000
+    out["TPT_peak_blood_concen_mmol_per_L"] = out["TPT_blood_concen_mmol_per_L"].max()
+    out["TPT_time_to_peak_min"] = t[np.argmax(out["TPT_blood_concen_mmol_per_L"])]
+    out["TPT_blood_AUC_mmol_min_per_L"] = TRAPEZOID(out["TPT_blood_concen_mmol_per_L"], t)
+    out["total_TPT_mmol"] = T.y.sum(axis=0)
+    out["TPT_peak_kidney_mmol"] = T.y[2].max()
+    out["TPT_time_to_kidney_peak_min"] = t[np.argmax(T.y[2])]
+    out["TPT_kidney_ng"] = T.y[2] * tpt.mol_weight_TPT * 1e6   # mmol * mg/mmol = mg; 1 mg = 1e6 ng
+
+    # Calcitriol and calcium concentrations, treated vs control
+    out["calcitriol_blood_pg_per_mL"] = C.y[1] / tpt.Vol_blood_in_bone * 1e6
+    out["calcitriol_blood_control_pg_per_mL"] = Cc.y[1] / tpt.Vol_blood_in_bone * 1e6
+    out["Ca_blood_concen_mg_per_L"] = A.y[2] / tpt.Vol_blood_in_bone
+    out["Ca_blood_control_mg_per_L"] = Ac.y[2] / tpt.Vol_blood_in_bone
+    out["Ca_blood_TPT_effect_mg_per_dL"] = (out["Ca_blood_concen_mg_per_L"] - out["Ca_blood_control_mg_per_L"]) / 10
+    out["bone_Ca_TPT_effect_mg"] = A.y[4] - Ac.y[4]
+
+    # Rates over time (for plots)
+    out["rates"] = calcium_rates(T.y[2], T.y[4], C.y[1], H)
+    out["rates_control"] = calcium_rates(Tc.y[2], Tc.y[4], Cc.y[1], H)
+
+    # ---- mass-balance checks: change in total amount must equal inputs minus losses -------------------
+    def balance_error(total, net_flux):
+        integral = np.concatenate(([0.0], np.cumsum(0.5 * (net_flux[1:] + net_flux[:-1]) * STEP_MIN)))
+        return np.max(np.abs((total - total[0]) - integral))
+
+    r = out["rates"]
+    losses_TPT = (tpt.k_blood_to_kidney_TPT * T.y[2] + tpt.k_bloodtoliver_TPT * T.y[3]
+                  + tpt.k_blood_to_other_tissue * T.y[1] + tpt.TPT_to_bone_receptor * T.y[4])
+    out["check_TPT_mass_error_mmol"] = balance_error(T.y.sum(axis=0), tpt.PTH_endogenous_blood_mmol_per_min - losses_TPT)
+    k_deg = np.log(2) / calcitriol.calcitriol_half_life
+    max_extra = sim["k_increase"] * H["kidney"]
+    production = calcitriol.basal_calcitriol_produce_kidney + max_extra * r["hill_kidney"]
+    out["check_calcitriol_mass_error_mg"] = balance_error(C.y.sum(axis=0), production - k_deg * C.y[0])
+    out["check_calcium_mass_error_mg"] = balance_error(A.y.sum(axis=0), -(r["gut_waste"] * A.y[1] + r["urine"] * A.y[3]))
+    out["rates"]["production_calcitriol"] = production
+    return out
+
+
+def print_summary(sim, out):
+    H, t = sim["H"], sim["time"]
+    base = out["rates_control"]
+    print("=" * 78)
+    print(f"Hill half-saturation mode: {HALF_SATURATION_MODE}  (kidney {H['kidney']*1e9:.3g} pmol, bone {H['bone']*1e9:.3g} pmol, kidney reabsorption {H['kidney_reabs']*1e9:.3g} pmol)")
+    print(f"  Hill value with NO injection (kidney, bone): {base['hill_kidney'][-1]:.2f}, {base['hill_bone'][-1]:.2f}"
+          f"   | at the injected peak: {out['rates']['hill_kidney'].max():.2f}, {out['rates']['hill_bone'].max():.2f}")
+    if base["hill_kidney"][-1] > 0.9:
+        print("  WARNING: Hill terms are saturated without any injection, so TPT effects cannot differ between runs.")
+    print(f"TPT: peak blood {out['TPT_peak_blood_concen_mmol_per_L']*tpt.mol_weight_TPT*1000:.3f} ng/mL at {out['TPT_time_to_peak_min']} min")
+    status = "calibrated" if sim["calibrated"] else "NOT calibrated (no solution found); using the value from calcitriol.py"
+    print(f"Calcitriol: k_increase_calcitriol_produce_by_TPT = {sim['k_increase']:.4g} ({status}; file value {calcitriol.k_increase_calcitriol_produce_by_TPT})")
+    print(f"  peak treated/control = {np.max(out['calcitriol_blood_pg_per_mL']/out['calcitriol_blood_control_pg_per_mL']):.2f} (target {CALCITRIOL_RISE_TARGET})")
+    print(f"  CONTROL drift: blood calcitriol {out['calcitriol_blood_control_pg_per_mL'][0]:.1f} -> {out['calcitriol_blood_control_pg_per_mL'][-1]:.1f} pg/mL over 24 h (basal level {calcium.calcitriol_basal_level*1e6:.1f})")
+    ca_c = out["Ca_blood_control_mg_per_L"]
+    print(f"Calcium: CONTROL drift: blood Ca {ca_c[0]/10:.2f} -> {ca_c[-1]/10:.2f} mg/dL over 24 h")
+    effect = out["Ca_blood_TPT_effect_mg_per_dL"]
+    print(f"  TPT effect on blood Ca (treated - control): peak {effect.max():+.3f} mg/dL at {t[np.argmax(effect)]/60:.1f} h (label ~ +{LABEL_CALCIUM_PEAK_RISE_MG_PER_DL})")
+    print(f"  TPT effect on bone Ca after 24 h: {out['bone_Ca_TPT_effect_mg'][-1]:+.1f} mg")
+    k_abs_basal = calcium.basal_absorb_Ca * calcium.gut_absorption_turnover_rate       # rate at calcitriol effect = 1
+    absorbed_share = k_abs_basal / (k_abs_basal + base["gut_waste"])
+    print(f"  Gut: absorbed share at basal calcitriol = {absorbed_share:.2f} (basal_absorb_Ca = {calcium.basal_absorb_Ca:.2f}; "
+          f"the waste rate multiplies (1 - basal) twice, see calcium.py)")
+    print(f"  Bone exchange flux = {calcium.k_blood_to_bone_Ca*calcium.initial_blood_Ca*1440/1000:.1f} g Ca/day (physiological remodelling is ~0.3-0.6 g/day)")
+    print(f"Mass-balance errors: TPT {out['check_TPT_mass_error_mmol']:.2e} mmol | calcitriol {out['check_calcitriol_mass_error_mg']:.2e} mg | calcium {out['check_calcium_mass_error_mg']:.2e} mg")
+    print("=" * 78)
+
+
+# =====================================================================
+# 7. PLOTS
+# =====================================================================
+def make_plots(sim, out):
+    t, T, Tc = sim["time"], sim["TPT"], sim["TPT_control"]
+    C, A, Ac = sim["calcitriol"], sim["calcium"], sim["calcium_control"]
+    h = t / 60
+    figures = {}
+
+    # ---- Figure 1: TPT pharmacokinetics ----------------------------------------------------
+    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
     for index, label in enumerate(["Injection site", "Blood", "Kidney", "Liver", "Bone"]):
-        plt.plot(time_min, TPT_solution.y[index], label=label)
-    plt.xlabel("Time (min)")
-    plt.ylabel("TPT amount (mmol)")
-    plt.legend()
+        ax[0, 0].plot(t, T.y[index], label=label)
+    ax[0, 0].set(title="TPT amount in each compartment", xlabel="Time (min)", ylabel="TPT amount (mmol)")
+    ax[0, 0].legend(fontsize=8)
+    ax[0, 1].plot(t, out["TPT_blood_concen_ng_per_mL"])
+    ax[0, 1].set(title="TPT blood concentration", xlabel="Time (min)", ylabel="ng/mL")
+    ax[1, 0].plot(t, out["TPT_kidney_ng"])
+    ax[1, 0].set(title="TPT in kidney", xlabel="Time (min)", ylabel="ng")
+    ax[1, 1].plot(t, out["rates"]["hill_kidney"], label="kidney Hill (treated)")
+    ax[1, 1].plot(t, out["rates"]["hill_bone"], label="bone Hill (treated)")
+    ax[1, 1].plot(t, out["rates_control"]["hill_kidney"], "--", label="kidney Hill (control)")
+    ax[1, 1].plot(t, out["rates_control"]["hill_bone"], "--", label="bone Hill (control)")
+    ax[1, 1].set(title="TPT effect signals (0 to 1)", xlabel="Time (min)", ylim=(-0.02, 1.05))
+    ax[1, 1].legend(fontsize=8)
+    fig.suptitle("1. TPT pharmacokinetics"); fig.tight_layout(); figures["1_TPT"] = fig
 
-    plt.figure()
-    plt.plot(time_min, TPT_solution.y[2])
-    plt.xlabel("Time (min)")
-    plt.ylabel("TPT amount in kidney (mmol)")
+    # ---- Figure 2: calcitriol ---------------------------------------------------------------
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.5))
+    for index, label in enumerate(["Kidney", "Blood", "Liver", "Gut"]):
+        ax[0].plot(t, C.y[index], label=label)
+    ax[0].set(title="Calcitriol amount (treated)", xlabel="Time (min)", ylabel="mg"); ax[0].legend(fontsize=8)
+    ax[1].plot(h, out["calcitriol_blood_pg_per_mL"], label="treated")
+    ax[1].plot(h, out["calcitriol_blood_control_pg_per_mL"], "--", label="control")
+    ax[1].axhline(calcium.calcitriol_basal_level * 1e6, color="gray", lw=0.7, label="basal level")
+    ax[1].set(title="Blood calcitriol", xlabel="Time (h)", ylabel="pg/mL"); ax[1].legend(fontsize=8)
+    ax[2].plot(h, out["rates"]["calcitriol_impact"], label="treated")
+    ax[2].plot(h, out["rates_control"]["calcitriol_impact"], "--", label="control")
+    ax[2].set(title="Calcitriol effect on gut absorption (1 = basal)", xlabel="Time (h)"); ax[2].legend(fontsize=8)
+    fig.suptitle("2. Calcitriol"); fig.tight_layout(); figures["2_calcitriol"] = fig
 
-    plt.figure()
-    plt.plot(time_min, TPT_blood_concen)
-    plt.xlabel("Time (min)")
-    plt.ylabel("TPT blood concentration (mmol/L)")
+    # ---- Figure 3: calcium ------------------------------------------------------------------
+    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
+    for index, label in enumerate(["Intake", "Gut", "Blood", "Kidney"]):
+        ax[0, 0].plot(t, A.y[index], label=label)
+    ax[0, 0].set(title="Calcium amount, treated (bone shown separately)", xlabel="Time (min)", ylabel="mg")
+    ax[0, 0].legend(fontsize=8)
+    ax[0, 1].plot(h, out["bone_Ca_TPT_effect_mg"])
+    ax[0, 1].set(title="Bone calcium: treated minus control", xlabel="Time (h)", ylabel="mg")
+    ax[1, 0].plot(h, out["Ca_blood_concen_mg_per_L"] / 10, label="treated")
+    ax[1, 0].plot(h, out["Ca_blood_control_mg_per_L"] / 10, "--", label="control")
+    ax[1, 0].set(title="Blood calcium", xlabel="Time (h)", ylabel="mg/dL"); ax[1, 0].legend(fontsize=8)
+    ax[1, 1].plot(h, out["Ca_blood_TPT_effect_mg_per_dL"])
+    ax[1, 1].axhline(LABEL_CALCIUM_PEAK_RISE_MG_PER_DL, color="gray", ls=":", label="label peak (+0.4)")
+    ax[1, 1].set(title="TPT effect on blood calcium (treated - control)", xlabel="Time (h)", ylabel="mg/dL")
+    ax[1, 1].legend(fontsize=8)
+    fig.suptitle("3. Calcium"); fig.tight_layout(); figures["3_calcium"] = fig
 
-    plt.figure()
-    for index, label in enumerate(["Intake", "Gut", "Blood", "Kidney", "Bone"]):
-        plt.plot(time_min, calcium_solution.y[index], label=label)
-    plt.xlabel("Time (min)")
-    plt.ylabel("Calcium mass (mg)")
-    plt.legend()
-    plt.show()
-
-    return {
-        "TPT_solution": TPT_solution,
-        "calcitriol_solution": calcitriol_solution,
-        "calcium_solution": calcium_solution,
-        "TPT_blood_concen_mmol_per_L": TPT_blood_concen,
-        "TPT_blood_concen_ng_per_mL": TPT_blood_concen_ng_per_mL,
-        "TPT_peak_blood_concen_mmol_per_L": TPT_peak_blood_concen,
-        "TPT_time_to_peak_min": TPT_time_to_peak_min,
-        "TPT_blood_AUC_mmol_min_per_L": TPT_blood_AUC,
-        "total_TPT_mmol": total_TPT_mmol,
-        "Ca_blood_concen_mg_per_L": Ca_blood_concen,
-        "TPT_peak_kidney_mmol": TPT_peak_kidney_mmol,
-        "TPT_time_to_kidney_peak_min": TPT_time_to_kidney_peak_min,
-        "TPT_kidney_ng": TPT_kidney_ng,
-    }
+    if SAVE_FIGURES:
+        for name, fig in figures.items():
+            fig.savefig(f"fig_{name}.png", dpi=110)
+    return figures
 
 
+# =====================================================================
+# 8. RUN
+# =====================================================================
 if __name__ == "__main__":
-    results = run_simulation()
+    simulation = run_simulation()
+    outputs = compute_outputs(simulation)
+    print_summary(simulation, outputs)
+    make_plots(simulation, outputs)
+    plt.show()
