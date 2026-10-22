@@ -7,6 +7,7 @@ concentrations rather than undefined derivatives such as dmB and dmCatrB.
 import numpy as np
 
 from tpt import Vol_blood_in_bone
+import calcitriol
 
 
 # PARAMETERS
@@ -38,9 +39,17 @@ kidney_turnover_rate = 1.0  # min^-1.
 bone_TPT_reference_mmol = None  # mmol TPT; needed only for the bone response.
 
 k_blood_kidney_Ca = blood_flow_kidney / Vol_blood_in_bone  # min^-1.
-k_blood_to_bone_Ca = (
-    cardiac_out_frac_bone * cardiac_output / Vol_blood_in_bone
-)  # min^-1; PDF perfusion expression replaces the source's mismatched bone formula.
+# FIX (bone flux): the old rate cardiac_out_frac_bone * cardiac_output / V assumed bone takes up ALL the calcium
+# delivered to it (about 54 g Ca/day). Physiological bone formation/resorption is about 0.3-0.6 g/day, so the
+# delivered calcium is multiplied by an extraction fraction (the share of delivered calcium that is taken up).
+bone_Ca_flux_mg_per_day = 450.0  # mg/day; physiological bone exchange, mid-range of 300-600 mg/day.
+Ca_blood_mg_per_L_baseline = 95.0  # mg/L; same blood calcium used for initial_blood_Ca below.
+bone_perfusion_rate = cardiac_out_frac_bone * cardiac_output / Vol_blood_in_bone  # min^-1; perfusion-limited ceiling.
+bone_Ca_extraction = (
+    bone_Ca_flux_mg_per_day / 1440
+    / (bone_perfusion_rate * Ca_blood_mg_per_L_baseline * Vol_blood_in_bone)
+)  # dimensionless; about 0.008, i.e. under 1% of calcium delivered to bone is taken up.
+k_blood_to_bone_Ca = bone_perfusion_rate * bone_Ca_extraction  # min^-1
 
 
 # INITIAL CONDITIONS (mg)
@@ -54,10 +63,21 @@ k_bone_to_blood_Ca = (
     k_blood_to_bone_Ca * initial_blood_Ca / intial_bone_Ca
 )  # min^-1; equal basal bone influx and outflux at the initial blood/bone amounts.
 
+# FIX (kidney start): kidney calcium used to start at 0, so reabsorption and urine loss started at 0 and the
+# control run spent its first hours filling the kidney. Start at steady state instead:
+#   inflow k_blood_kidney_Ca * blood = outflow (reabsorption + urine) * kidney = kidney_turnover_rate * kidney
+initial_kidney_Ca = k_blood_kidney_Ca * initial_blood_Ca / kidney_turnover_rate  # mg; about 11.3 mg.
+
+# FIX (calcitriol baseline): calcitriol.py starts blood calcitriol at its own steady state (about 86.5 pg/mL), so
+# measure the gut-absorption effect from THAT level; the sampled 18-78 pg/mL draw above is kept only so the
+# random sequence (and every draw after it) stays identical, and is no longer used.
+calcitriol_basal_level_sampled = calcitriol_basal_level  # mg/L; kept for reference, not used.
+calcitriol_basal_level = calcitriol.Initial_calcitriol_blood / Vol_blood_in_bone  # mg/L; effect = 1 at baseline.
+
 initial_calcium = [
     m_Ca_intake,
     initial_gut,
     initial_blood_Ca,
-    initial_gut,  # Initial kidney calcium, using the equal-amount assumption above.
+    initial_kidney_Ca,
     intial_bone_Ca,
 ]

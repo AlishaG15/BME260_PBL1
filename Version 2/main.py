@@ -1,11 +1,3 @@
-"""Run with: python main.py (keep all four scripts in the same folder).
-
-Units: TPT in mmol; calcitriol and calcium in mg; time in minutes; volume in L.
-Fill all required None values in calcitriol.py and calcium.py before running.
-The PDF's updated names are used wherever supplied; other names describe
-the compound, compartment, and units. Unit corrections are documented locally.
-"""
-
 """TPT -> calcitriol -> calcium model.      Run with:  python main.py
 (keep main.py, tpt.py, calcitriol.py and calcium.py in the same folder)
 
@@ -17,8 +9,9 @@ WHAT IS MODELLED  (three linked compartment models, solved one after another)
 UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L
 
 HOW THE RESULTS ARE READ
-  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). The initial calcium and
-  calcitriol amounts in the parameter files are not a steady state, so both runs drift. The TPT effect is
+  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). Calcitriol and kidney calcium
+  start at steady state, so they stay flat in the control run. Calcium still drifts in the control run because
+  the one-off food pool (m_Ca_intake) is absorbed during the day and bone exchange is small. The TPT effect is
   therefore always TREATED minus CONTROL.
 
 FLAGS FOR YOU: search this file for "ASSUMPTION" and "SWITCH"; they mark every interpretation I had to make.
@@ -270,6 +263,11 @@ def calibrate_calcitriol_coefficient(time_min, TPT_treated, TPT_control, H):
     try:
         return brentq(lambda k: peak_ratio(k) - CALCITRIOL_RISE_TARGET, 1e-2, 1e9, xtol=1e-3, rtol=1e-6), True
     except ValueError:
+        # FIX: calcitriol.py leaves this value as None, which would crash the next solve with a confusing TypeError.
+        if calcitriol.k_increase_calcitriol_produce_by_TPT is None:
+            raise RuntimeError("Calibration of k_increase_calcitriol_produce_by_TPT found no solution for "
+                               f"a peak calcitriol ratio of {CALCITRIOL_RISE_TARGET}, and calcitriol.py has no value "
+                               "to fall back on. Set one in calcitriol.py or change CALCITRIOL_RISE_TARGET.")
         return calcitriol.k_increase_calcitriol_produce_by_TPT, False
 
 
@@ -282,6 +280,8 @@ def run_simulation():
 
     # --- Model 2: calcitriol, treated and control ------------------------------------------
     k_increase, calibrated = calcitriol.k_increase_calcitriol_produce_by_TPT, False
+    if k_increase is None and not CALIBRATE_CALCITRIOL_TPT:
+        raise ValueError("CALIBRATE_CALCITRIOL_TPT is False but calcitriol.k_increase_calcitriol_produce_by_TPT is None.")
     if CALIBRATE_CALCITRIOL_TPT:
         k_increase, calibrated = calibrate_calcitriol_coefficient(time_min, TPT_treated, TPT_control, H)
     calcitriol_treated = solve_calcitriol(time_min, TPT_treated, k_increase, H["kidney"])
@@ -369,9 +369,9 @@ def print_summary(sim, out):
     print(f"  TPT effect on bone Ca after 24 h: {out['bone_Ca_TPT_effect_mg'][-1]:+.1f} mg")
     k_abs_basal = calcium.basal_absorb_Ca * calcium.gut_absorption_turnover_rate       # rate at calcitriol effect = 1
     absorbed_share = k_abs_basal / (k_abs_basal + base["gut_waste"])
-    print(f"  Gut: absorbed share at basal calcitriol = {absorbed_share:.2f} (basal_absorb_Ca = {calcium.basal_absorb_Ca:.2f}; "
-          f"the waste rate multiplies (1 - basal) twice, see calcium.py)")
-    print(f"  Bone exchange flux = {calcium.k_blood_to_bone_Ca*calcium.initial_blood_Ca*1440/1000:.1f} g Ca/day (physiological remodelling is ~0.3-0.6 g/day)")
+    print(f"  Gut: absorbed share at basal calcitriol = {absorbed_share:.2f} (basal_absorb_Ca = {calcium.basal_absorb_Ca:.2f})")
+    print(f"  Bone exchange flux = {calcium.k_blood_to_bone_Ca*calcium.initial_blood_Ca*1440/1000:.2f} g Ca/day (physiological remodelling is ~0.3-0.6 g/day)")
+    print(f"  Kidney Ca starts at {calcium.initial_kidney_Ca:.2f} mg (steady state); calcitriol effect on gut absorption at baseline = {base['calcitriol_impact'][0]:.2f}")
     print(f"Mass-balance errors: TPT {out['check_TPT_mass_error_mmol']:.2e} mmol | calcitriol {out['check_calcitriol_mass_error_mg']:.2e} mg | calcium {out['check_calcium_mass_error_mg']:.2e} mg")
     print("=" * 78)
 
