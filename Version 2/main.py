@@ -13,9 +13,9 @@ np.random.seed(0)  # Set before parameter imports, preserving repeatable draws.
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 
-import tpt
-import calcium
+import tpt 
 import calcitriol
+import calcium
 
 
 def TPT_model(time_min, TPT_amounts_mmol):
