@@ -32,8 +32,8 @@ import calcium
 
 
 
-osteoporosis = True
-renal_failure = False
+osteoporosis = False
+renal_failure = True
 low_estrogen = False
 if osteoporosis is True:
     calcium.calcitriol_sensitivity= np.random.uniform(0.2, 0.6)

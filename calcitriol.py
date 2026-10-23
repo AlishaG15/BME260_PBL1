@@ -1,69 +1,67 @@
 import numpy as np
 
 
-# PARAMETERS
 
-# Calcitriol rate constants
-k_KB_Catr  = None # kidney -> blood
-k_BK_Catr  = None # blood -> kidney
-k_LG_Catr  = None # liver -> gut
-k_GB_Catr  = None # gut -> blood
-k_BL_Catr  = None # blood -> liver
-k_LB_Catr  = None # liver -> blood
-t_half_Catr = None # calcitriol half-life (min)
-k_p_Catr   = None # production in kidney (mass/min)
-k_TPT_Catr = None # extra production from TPT in kidney
+import math
+
+# PARAMETERS (min^-1)
+# Midpoint of the document's listed fast-exchange value/range
+k_kidney_to_blood_calcitriol = 0.2
+k_blood_to_kidney_calcitriol = 0.2
+k_liver_to_gut_calcitriol = None  # No independent value; lumped elimination
+k_gut_to_blood_calcitriol = 0.2
+k_blood_to_liver_calcitriol = 0.2
+K_liver_to_blood_calcitriol = 0.2
+
+# Listed in the document but absent from the original ODEs
+k_blood_to_gut_calcitriol = 0.2
+
+# HALF-LIFE (min)
+# Midpoint of 5-8 hours = 6.5 hours = 390 minutes
+calcitriol_half_life = 390.0
+
+# BASAL PRODUCTION (mg/min)
+# Midpoint: 3.1 pmol/min
+# Molecular weight = 416.64 g/mol
+PMOL_TO_MG = 416.64e-9
+basal_calcitriol_produce_kidney = 3.1 * PMOL_TO_MG
+
+# TPT-dependent production coefficient
+# Not specified numerically in the document
+k_increase_calcitriol_produce_by_TPT = None
 
 
-# INITIAL CONDITIONS
+# INITIAL CONDITIONS (mg)
+# Midpoints of the reported initial mass ranges, converted from pmol to mg
 
-m_CatrK0 = None # kidney
-m_CatrB0 = None # blood
-m_CatrL0 = None # liver
-m_CatrG0 = None # gut
+Initial_calcitriol_kidney = 153.5 * PMOL_TO_MG
+Initial_calcitriol_blood = 273.5 * PMOL_TO_MG
+initial_calcitriol_liver = 891.5 * PMOL_TO_MG
+Initial_calcitriol_GUT_PLACEHOLDER = 594.5 * PMOL_TO_MG
 
-# 1 dose of tpt causes 80% increase in calcitriol
+Initial_calcitriol_gut = Initial_calcitriol_GUT_PLACEHOLDER
 
-mCatr0 = [m_CatrK0, m_CatrB0, m_CatrL0, m_CatrG0]
+initial_calcitriol = [
+    Initial_calcitriol_kidney,
+    Initial_calcitriol_blood,
+    initial_calcitriol_liver,
+    Initial_calcitriol_gut,
+]
 
-# Insert Condition (change to true)
+
+# CONDITIONS: False keeps the healthy baseline.
 osteoporosis = False
 renal_failure = False
 low_estrogen = False
 
-# Copy healthy values to patient
-patient = {
-    "k_LG_Catr": k_LG_Catr,  # liver -> gut
-    "k_BL_Catr": k_BL_Catr,  # blood -> liver
-    "k_LB_Catr": k_LB_Catr,  # liver -> blood
-    "k_KB_Catr": k_KB_Catr,  # kidney -> blood
-    "k_BK_Catr": k_BK_Catr,  # blood -> kidney
-    "k_BG_Catr": k_BG_Catr,  # blood -> gut
-    "k_GB_Catr": k_GB_Catr,  # gut -> blood
-    "k_p_Catr": k_p_Catr,
-    "k_TPT_Catr": k_TPT_Catr,
-    "t_half_Catr": t_half_Catr,
-}
-
-# Osteoporosis
 if osteoporosis:
     print("Osteoporosis has no assumed calcitriol parameter changes.")
 
-# Renal Fail
 if renal_failure:
-    if k_p_Catr is None or t_half_Catr is None:
-        raise ValueError("Enter healthy k_p_Catr and t_half_Catr values first.")
-    patient["k_p_Catr"] = k_p_Catr * (14.2 / 31.8)
-  # k_p_Catr is healthy production rate. The ratio 14.2/31.8 is renal failure rate with healthy rate. The patient produces about 45% as much calcitriol.
-    print("Renal failure causes calcitriol production to decrease about 45% of healthy baseline.")
-    patient["t_half_Catr"] = t_half_Catr / (0.45 / 0.58)
-  # The ratio 0.45/0.58 is existing calcitriol being removed more slowly about 78% of healthy clearance
-    print("Renal failure: half-life increased by about 29%.")
+    if basal_calcitriol_produce_kidney is None or calcitriol_half_life is None:
+        raise ValueError("Fill in healthy calcitriol production and half-life first.")
+    basal_calcitriol_produce_kidney *= 14.2 / 31.8
+    calcitriol_half_life /= 0.45 / 0.58
 
-# Low Estrogen
 if low_estrogen:
     print("Low estrogen has no assumed calcitriol parameter changes.")
-  
-# Show condition effects
-for parameter, value in patient.items():
-    print(f"{parameter} = {value}")
