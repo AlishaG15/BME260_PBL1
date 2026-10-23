@@ -17,6 +17,9 @@ HOW THE RESULTS ARE READ
 FLAGS FOR YOU: search this file for "ASSUMPTION" and "SWITCH"; they mark every interpretation I had to make.
 """
 
+import importlib
+import math
+
 import numpy as np
 
 np.random.seed(0)  # must come before the parameter imports so the sampled draws repeat
@@ -33,25 +36,56 @@ import calcium
 
 
 osteoporosis = False
-renal_failure = True
+renal_failure =False
 low_estrogen = False
-if osteoporosis is True:
-    calcium.calcitriol_sensitivity= np.random.uniform(0.2, 0.6)
-    calcium.intial_bone_Ca = (1.0e6)*(0.844)    #mg; 1 kg = 1,000,000 mg; bone mass reduced by 15.6% in osteoporosis
-    tpt.k_elimination_TPT = tpt.k_elimination_TPT / 2
-    print("Osteoporosis has no assumed calcitriol parameter changes.")
 
-if renal_failure is True:
-    if calcitriol.basal_calcitriol_produce_kidney is None or calcitriol.half_life is None:
-        raise ValueError("Fill in healthy calcitriol production and half-life first.")
-    tpt.k_diffuse_TPT = tpt.k_diffuse_TPT * 1.73
-    tpt.k_eliminantion_TPT=tpt.k_elimination_TPT*(1.77)
-    calcitriol.basal_calcitriol_produce_kidney *= 14.2 / 31.8
-    calcitriol.half_life /= 0.45 / 0.58
 
-if low_estrogen is True:
-    
-    print("Low estrogen has no assumed calcitriol parameter changes.")
+def apply_conditions():
+    """Apply the disease conditions, then recompute everything the parameter modules derived from the changed values
+    (they compute rates and starting amounts once, at import, so overriding a value alone has no effect).
+    Call once after importing, and again after every importlib.reload (a reload resets the modules)."""
+    if osteoporosis is True:
+        calcium.calcitriol_sensitivity = np.random.uniform(0.2, 0.6)
+        calcium.intial_bone_Ca = (1.0e6) * (0.844)    # mg; 1 kg = 1,000,000 mg; bone mass reduced by 15.6% in osteoporosis
+        tpt.k_elimination_TPT = tpt.k_elimination_TPT / 2
+        print("Osteoporosis has no assumed calcitriol parameter changes.")
+
+    if renal_failure is True:
+        if calcitriol.basal_calcitriol_produce_kidney is None or calcitriol.calcitriol_half_life is None:
+            raise ValueError("Fill in healthy calcitriol production and half-life first.")
+        tpt.k_diffuse_TPT = tpt.k_diffuse_TPT * 1.73
+        tpt.k_elimination_TPT = tpt.k_elimination_TPT * 1.77
+        calcitriol.basal_calcitriol_produce_kidney *= 14.2 / 31.8
+        calcitriol.calcitriol_half_life /= 0.45 / 0.58
+
+    if low_estrogen is True:
+        print("Low estrogen has no assumed calcitriol parameter changes.")
+
+    # --- recompute derived TPT rates (same formulas as tpt.py) ---
+    tpt.k_blood_to_kidney_TPT = tpt.frac_elim_kidney_TPT * tpt.k_elimination_TPT
+    tpt.k_kidney_degrade_TPT = tpt.k_blood_to_kidney_TPT
+    tpt.k_bloodtoliver_TPT = tpt.frac_elim_toliver_TPT * tpt.k_elimination_TPT
+    tpt.k_blood_to_other_tissue = (
+        (1 - tpt.frac_elim_kidney_TPT - tpt.frac_elim_toliver_TPT) * tpt.k_elimination_TPT - tpt.TPT_to_bone_receptor)
+
+    # --- recompute calcitriol degradation and its steady-state starting amounts (same formulas as calcitriol.py) ---
+    c = calcitriol
+    c.k_degrade_calcitriol = math.log(2) / c.calcitriol_half_life * c.total_over_kidney
+    c.Initial_calcitriol_blood = (c.basal_calcitriol_produce_kidney * c.k_kidney_to_blood_calcitriol
+                                  / (c.k_degrade_calcitriol * c.k_blood_to_kidney_calcitriol))
+    c.Initial_calcitriol_kidney = (c.k_blood_to_kidney_calcitriol / c.k_kidney_to_blood_calcitriol) * c.Initial_calcitriol_blood
+    c.initial_calcitriol_liver = (c.k_blood_to_liver_calcitriol / c.K_liver_to_blood_calcitriol) * c.Initial_calcitriol_blood
+    c.initial_calcitriol = [c.Initial_calcitriol_kidney, c.Initial_calcitriol_blood,
+                            c.initial_calcitriol_liver, c.Initial_calcitriol_gut]
+
+    # --- recompute calcium quantities that depend on calcitriol baseline and bone mass ---
+    calcium.calcitriol_basal_level = c.Initial_calcitriol_blood / tpt.Vol_blood_in_bone   # effect = 1 at baseline
+    calcium.k_bone_to_blood_Ca = calcium.k_blood_to_bone_Ca * calcium.initial_blood_Ca / calcium.intial_bone_Ca
+    calcium.initial_calcium = [calcium.initial_intake_Ca, calcium.initial_gut, calcium.initial_blood_Ca,
+                               calcium.initial_kidney_Ca, calcium.intial_bone_Ca]
+
+
+apply_conditions()
 
 # =====================================================================
 # 0. SETTINGS  (the only things you should need to change here)
@@ -262,6 +296,7 @@ def calcium_model(t, amounts, TPT_kidney_at, TPT_bone_at, calcitriol_blood_at, H
     d_blood = (
         k["gut_abs"] * gut + k["kidney_reabs"] * kidney + k["bone_release"] * bone
         - (calcium.k_blood_kidney_Ca + calcium.k_blood_to_bone_Ca) * blood
+        - calcium.k_Ca_feedback * (blood - calcium.initial_blood_Ca)   # homeostasis: extra urine loss of EXCESS Ca
     )
     # Kidney: + from blood, - reabsorbed to blood, - lost in urine.
     d_kidney = calcium.k_blood_kidney_Ca * blood - (k["kidney_reabs"] + k["urine"]) * kidney
@@ -525,6 +560,7 @@ def run_monte_carlo():
     np.random.seed(0)
     for module in (tpt, calcitriol, calcium):
         importlib.reload(module)
+    apply_conditions()                               # a reload resets the modules, so re-apply the conditions
     DOSE_SCALE = 1.0
     nominal = run_simulation()
     fixed = dict(H=nominal["H"], k_increase=nominal["k_increase"], ca_scale=nominal["ca_scale"])
@@ -534,6 +570,7 @@ def run_monte_carlo():
         np.random.seed(run + 1)                      # draw number = seed - 1, so any run can be repeated
         for module in (tpt, calcitriol, calcium):    # re-import = new random draws
             importlib.reload(module)
+        apply_conditions()
         try:
             for name, dose_scale in SCENARIOS.items():
                 DOSE_SCALE = dose_scale
