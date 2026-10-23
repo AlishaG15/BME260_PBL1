@@ -42,3 +42,8 @@ m_CaK0  = 0                              # kidney
 # m_CaBo0 defined above (1.0e6 mg)
 
 mCa0 = [m_CaI0, m_CaG0, m_CaB0, m_CaK0, m_CaBo0]
+
+
+
+
+if osteoporosis:
