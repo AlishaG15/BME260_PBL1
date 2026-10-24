@@ -53,13 +53,14 @@ def apply_conditions(condition="healthy", seed = 0):
     if condition == "renal_failure":
         if calcitriol.basal_calcitriol_produce_kidney is None or calcitriol.calcitriol_half_life is None:
             raise ValueError("Fill in healthy calcitriol production and half-life first.")
+        tpt.k_blood_to_kidney_TPT = np.random.uniform(0.10, 0.15) * tpt.frac_elim_kidney_TPT * tpt.k_elimination_TPT  # mL/min/kg; reduced kidney blood flow in renal failure
         tpt.k_diffuse_TPT = tpt.k_diffuse_TPT / 1.73
         tpt.k_elimination_TPT = tpt.k_elimination_TPT / 1.77
         calcitriol.basal_calcitriol_produce_kidney *= 14.2 / 31.8
         calcitriol.calcitriol_half_life /= 0.45 / 0.58
 
     if grey_market is True:
-        tpt.dose= tpt.dose*(np.random.uniform(0.07, 0.14))  # teriparatide grey market dose have been found to have only 7-14% of the original dose.
+        tpt.dose= tpt.dose*(np.random.uniform(0.077, 0.1437))  # teriparatide grey market dose have been found to have only 7-14% of the original dose.
         print("Grey market has no assumed calcitriol or calcium parameter changes.")
 
     # --- recompute derived TPT rates (same formulas as tpt.py) ---
