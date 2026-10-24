@@ -96,14 +96,14 @@ apply_conditions("healthy")
 # =====================================================================
 # 0. SETTINGS  (the only things you should need to change here)
 # =====================================================================
-SIM_DAYS = 1                     # simulated time
+SIM_DAYS = 7                  # simulated time: one injection at t = 0 of each day
 SIM_MINUTES = SIM_DAYS * 24 * 60
 # DOSING: one injection every DOSE_INTERVAL_MIN, starting at t = 0 (DOSE_SCALE below scales every dose).
 # The calibrations (Hill constants, calcitriol coefficient, Ca-effect scale) still use ONE reference dose, so
 # they describe a single injection and are not inflated by accumulation over several days.
 DOSE_INTERVAL_MIN = 24 * 60        # daily
 N_DOSES = SIM_DAYS                 # one per day for the whole run; set 1 for a single injection
-PLOT_DETAIL_DAYS = None            # daily-dosing figures (TPT, calcitriol): None = whole run; e.g. 2 zooms to the first 2 days
+PLOT_DETAIL_DAYS = 1               # TPT and calcitriol figures show day 1 only    # daily-dosing figures (TPT, calcitriol): None = whole run; e.g. 2 zooms to the first 2 days
 # The calcium and bone-repair figures (3 and 4) come from a separate SINGLE-injection run with the same calibration.
 SINGLE_DOSE_DAYS = 7             # length of that run
 SINGLE_DOSE_DETAIL_HOURS = 24      # its fast panels (amounts, blood Ca) zoom to this window; bone panels show all days
@@ -667,6 +667,9 @@ def make_plots_single(sim, out):
     ax[0, 1].ticklabel_format(axis="y", style="plain", useOffset=False)
     ax[0, 1].set(title="Bone calcium: treated vs control (y-axis zoomed)", xlabel="Time (days)", ylabel="mg")
     ax[0, 1].legend(fontsize=8)
+    for x in range(N_DOSES):
+        ax[0, 1].axvline(x, color="gray", lw=0.4, alpha=0.4, zorder=0)
+    
     ax[1, 0].plot(d, out["Ca_blood_concen_mg_per_L"] / 10, label="treated")
     ax[1, 0].plot(d, out["Ca_blood_control_mg_per_L"] / 10, "--", label="control")
     ax[1, 0].set(title="Blood calcium", xlabel="Time (days)", ylabel="mg/dL", xlim=(0, detail_days)); ax[1, 0].legend(fontsize=8)
@@ -674,8 +677,7 @@ def make_plots_single(sim, out):
     ax[1, 1].axhline(LABEL_CALCIUM_PEAK_RISE_MG_PER_DL, color="gray", ls=":", label="label peak (+0.4)")
     ax[1, 1].set(title="TPT effect on blood calcium levels", xlabel="Time (days)", ylabel="mg/dL", xlim=(0, detail_days))
     ax[1, 1].legend(fontsize=8)
-    fig.suptitle("3. Calcium (single injection)"); fig.tight_layout(); figures["3_calcium"] = fig
-
+    fig.suptitle("3. Calcium (daily dosing; bone panel shows all days)"); fig.tight_layout(); figures["3_calcium"] = fig
     # ---- Figure 4: bone repair (ALP-driven formation) vs resorption (hours) ------------------
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
     ax[0, 0].plot(hr, out["ALP_increase_pct"], color="tab:green", label="ALP increase (%)")
@@ -700,10 +702,14 @@ def make_plots_single(sim, out):
     ax[1, 1].plot(hr, out["bone_Ca_levels_TPT_effect"])
     ax[1, 1].axhline(0, color="gray", lw=0.7)
     ax[1, 1].set(title="Net bone calcium change (treated - control)", xlabel="Time (h)", ylabel="mg")
-    for a in ax.ravel():
+    for a in (ax[0, 0], ax[0, 1], ax[1, 0]):
         a.set_xlim(0, bone_xmax)
     twin.set_xlim(0, bone_xmax)
-    fig.suptitle("4. Bone repair vs resorption (single injection)"); fig.tight_layout(); figures["4_bone"] = fig
+    ax[1, 1].set_xlim(0, hr[-1])                       # net bone calcium over all days
+    for x in range(0, int(hr[-1]) + 1, 24):
+        ax[1, 1].axvline(x, color="gray", lw=0.4, alpha=0.4, zorder=0)
+
+    fig.suptitle("4. Bone repair vs resorption (day 1; net bone Ca over all days)"); fig.tight_layout(); figures["4_bone"] = fig
     return figures
 
 
@@ -802,14 +808,9 @@ if __name__ == "__main__":
         outputs = compute_outputs(simulation)
         print(f"DAILY DOSING, {SIM_DAYS} days  (TPT and calcitriol figures)")
         print_summary(simulation, outputs)
-        
-        single_sim, single_out = run_single_dose_view(simulation)
-        print(f"SINGLE INJECTION, {SINGLE_DOSE_DAYS} days  (calcium and bone-repair figures)")
-        print_summary(single_sim, single_out)
-        
+            
         # Gather all figures
-        figures = {**make_plots_daily(simulation, outputs), **make_plots_single(single_sim, single_out)}
-        
+        figures = {**make_plots_daily(simulation, outputs), **make_plots_single(simulation, outputs)}
         # Save all figures for this condition into a single multi-page PDF
         if SAVE_FIGURES:
             filename = f"results_{condition}.pdf"
