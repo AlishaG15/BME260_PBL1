@@ -53,7 +53,7 @@ def apply_conditions(condition="healthy", seed = 0):
     if condition == "renal_failure":
         if calcitriol.basal_calcitriol_produce_kidney is None or calcitriol.calcitriol_half_life is None:
             raise ValueError("Fill in healthy calcitriol production and half-life first.")
-        tpt.k_blood_to_kidney_TPT = np.random.uniform(0.10, 0.15) * tpt.frac_elim_kidney_TPT * tpt.k_elimination_TPT  # mL/min/kg; reduced kidney blood flow in renal failure
+        kidney_flow_scale = np.random.uniform(0.10, 0.15)   # reduced kidney blood flow in renal failure (applied below)
         tpt.k_diffuse_TPT = tpt.k_diffuse_TPT / 1.73
         tpt.k_elimination_TPT = tpt.k_elimination_TPT / 1.77
         calcitriol.basal_calcitriol_produce_kidney *= 14.2 / 31.8
@@ -65,6 +65,8 @@ def apply_conditions(condition="healthy", seed = 0):
 
     # --- recompute derived TPT rates (same formulas as tpt.py) ---
     tpt.k_blood_to_kidney_TPT = tpt.frac_elim_kidney_TPT * tpt.k_elimination_TPT
+    if condition == "renal_failure":
+        tpt.k_blood_to_kidney_TPT *= kidney_flow_scale   # reduced kidney blood flow, applied after the recompute so it isn't overwritten
     tpt.k_kidney_degrade_TPT = tpt.k_blood_to_kidney_TPT
     tpt.k_bloodtoliver_TPT = tpt.frac_elim_toliver_TPT * tpt.k_elimination_TPT
     tpt.k_blood_to_other_tissue = (
@@ -114,6 +116,7 @@ DOSE_SCALE = 1.0
 
 # MONTE CARLO (item 15): re-draw every uncertain parameter N_RUNS times and run each scenario with the same draws.
 
+RUN_MONTE_CARLO = True             # takes a few minutes; set False to skip
 N_RUNS = 100
 SCENARIOS = {                                   # dose relative to the 20 ug reference
     "reference (20 ug)": 1.0,
@@ -754,7 +757,7 @@ def run_monte_carlo():
                       "calcitriol peak (x baseline)": []} for name in SCENARIOS}
     for run in range(N_RUNS):
         np.random.seed(run + 1)                      # draw number = seed - 1, so any run can be repeated
-        apply_conditions("healthy")                  # Reloads modules and applies default condition
+        apply_conditions("healthy", seed=run + 1)    # reloads the modules with this draw's seed
         try:
             for name, dose_scale in SCENARIOS.items():
                 DOSE_SCALE = dose_scale
@@ -823,4 +826,8 @@ if __name__ == "__main__":
         # Clear plots to prevent overlapping/memory leak in the next loop
         for fig in figures.values():
             plt.close(fig)
+
+    # MONTE CARLO: reruns the healthy model N_RUNS times with new parameter draws; saves one boxplot (fig_5_monte_carlo.png)
+    if RUN_MONTE_CARLO:
+        run_monte_carlo()
  
