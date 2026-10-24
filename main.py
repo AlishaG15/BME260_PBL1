@@ -9,12 +9,14 @@ WHAT IS MODELLED  (three linked compartment models, solved one after another)
 UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L
 
 HOW THE RESULTS ARE READ
-  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). Calcitriol and kidney calcium
-  start at steady state, so they stay flat in the control run. Calcium still drifts in the control run because
-  the one-off food pool (m_Ca_intake) is absorbed during the day and bone exchange is small. The TPT effect is
-  therefore always TREATED minus CONTROL.
+  Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). Every compartment starts at
+  its no-drug steady state, so the control run stays flat. The TPT effect is always TREATED minus CONTROL.
 
-FLAGS FOR YOU: search this file for "ASSUMPTION" and "SWITCH"; they mark every interpretation I had to make.
+RUN ORDER
+  For each patient state (healthy, osteoporosis, renal failure): apply_conditions -> run_simulation ->
+  compute_outputs -> print_summary -> figures. Then the Monte Carlo (run_monte_carlo), if switched on.
+
+Search for "ASSUMPTION" and "SWITCH" to find modelling assumptions and options.
 """
 
 import importlib
@@ -34,7 +36,7 @@ import tpt
 import calcitriol
 import calcium
 
-grey_market = False
+grey_market = False   # SWITCH: True scales every dose to 7.7-14% (low-potency gray-market product). Separate from SCENARIOS below.
 
 
 def apply_conditions(condition="healthy", seed = 0):
@@ -98,7 +100,7 @@ def apply_conditions(condition="healthy", seed = 0):
 apply_conditions("healthy")
 
 # =====================================================================
-# 0. SETTINGS  (the only things you should need to change here)
+# 0. SETTINGS  (model options)
 # =====================================================================
 SIM_DAYS = 7                  # simulated time: one injection at t = 0 of each day
 SIM_MINUTES = SIM_DAYS * 24 * 60
@@ -107,16 +109,13 @@ SIM_MINUTES = SIM_DAYS * 24 * 60
 # they describe a single injection and are not inflated by accumulation over several days.
 DOSE_INTERVAL_MIN = 24 * 60        # daily
 N_DOSES = SIM_DAYS                 # one per day for the whole run; set 1 for a single injection
-PLOT_DETAIL_DAYS = 1               # TPT and calcitriol figures show day 1 only    # daily-dosing figures (TPT, calcitriol): None = whole run; e.g. 2 zooms to the first 2 days
-# The calcium and bone-repair figures (3 and 4) come from a separate SINGLE-injection run with the same calibration.
-SINGLE_DOSE_DAYS = 7             # length of that run
-SINGLE_DOSE_DETAIL_HOURS = 24      # its fast panels (amounts, blood Ca) zoom to this window; bone panels show all days
+PLOT_DETAIL_DAYS = 1               # TPT and calcitriol figures zoom to this many days (None = whole run)
+SINGLE_DOSE_DETAIL_HOURS = 24      # calcium figure: fast panels (amounts, blood Ca) zoom to this window; bone panels show all days
 BONE_PLOT_HOURS = 24               # bone-repair figure x-axis window in hours (None = whole run)
 # SCENARIO: dose relative to the standard 20 ug injection (1.0 = reference dose, 1.35 = gray-market overdose)
 DOSE_SCALE = 1.0
 
-# MONTE CARLO (item 15): re-draw every uncertain parameter N_RUNS times and run each scenario with the same draws.
-
+# MONTE CARLO: re-draw every uncertain parameter N_RUNS times and run each condition and scenario with the same draws.
 RUN_MONTE_CARLO = True             # takes ~10-12 min with all three conditions; set False to skip
 MC_CONDITIONS = ["healthy", "osteoporosis", "renal_failure"]   # patient states the Monte Carlo runs
 N_RUNS = 100
@@ -129,11 +128,11 @@ STEP_MIN = 2                       # output time step (min)
 
 # SWITCH: how the Hill half-saturation constant is read.
 #   "fraction_of_peak": H = 0.316 x the peak TPT amount in that organ after the injection (ASSUMPTION, see below)
-#   "table":            H = calcium.half_saturation_concen = 0.316 pmol, exactly as in your file
+#   "table":            H = calcium.half_saturation_concen = 0.316 pmol (value from the parameter table)
 # With the table value the Hill terms are saturated at all times (baseline kidney TPT is ~30 pmol), so the
-# injection changes nothing. Run once with "table" to see this for yourself.
+# injection changes nothing, which is why fraction_of_peak is used.
 HALF_SATURATION_MODE = "fraction_of_peak"
-HALF_SATURATION_FRACTION = 0.316   # your original code used 0.316 * TPT, i.e. a fraction
+HALF_SATURATION_FRACTION = 0.316   # H = 0.316 x peak organ TPT
 
 # SWITCH: half-saturation constant for the TPT -> kidney Ca REABSORPTION Hill term only (calcitriol production
 # and bone release keep the constants above). Set ONE of these, or leave both None to reuse the kidney value above.
@@ -146,7 +145,7 @@ KIDNEY_REABS_H_FRACTION = None
 CALIBRATE_CALCITRIOL_TPT = True
 CALCITRIOL_RISE_TARGET = 1.8       # peak (treated / control) blood calcitriol within the run
 
-# SWITCH: your typed equations have no blood -> gut calcitriol term, so it is left out by default.
+# SWITCH: the model equations have no blood -> gut calcitriol term, so it is left out by default.
 INCLUDE_BLOOD_TO_GUT_CALCITRIOL = False
 
 # SWITCH (mass balance): the homeostatic Ca loss k_Ca_feedback*(blood - baseline) turns NEGATIVE when blood Ca is
@@ -168,7 +167,7 @@ FIGURE_FORMAT = "png"             # "png": each figure as its own PNG; "pdf": on
 FIGURE_FOLDER = "figures"
 LABEL_CALCIUM_PEAK_RISE_MG_PER_DL = 0.4   # FORTEO label: ~+0.4 mg/dL serum Ca, shown on the plot for reference
 
-# SWITCH (item 6/13): scale the three TPT -> calcium effects (bone release, kidney reabsorption, calcitriol -> gut)
+# SWITCH: scale the three TPT -> calcium effects (bone release, kidney reabsorption, calcitriol -> gut)
 # by ONE factor so the REFERENCE dose raises serum Ca by +0.4 mg/dL (Satterwhite 2010: median +0.4 mg/dL at
 # ~4.25 h, back to baseline by 16-24 h). Found once at the reference dose and held fixed for every scenario.
 CALIBRATE_CA_EFFECT = True
@@ -428,7 +427,7 @@ def calibrate_calcitriol_coefficient(time_min, TPT_treated, TPT_control, H):
     try:
         return brentq(lambda k: peak_ratio(k) - CALCITRIOL_RISE_TARGET, 1e-2, 1e9, xtol=1e-3, rtol=1e-6), True
     except ValueError:
-        # FIX: calcitriol.py leaves this value as None, which would crash the next solve with a confusing TypeError.
+        # calcitriol.py leaves this value as None, so stop with a clear message instead of a TypeError.
         if calcitriol.k_increase_calcitriol_produce_by_TPT is None:
             raise RuntimeError("Calibration of k_increase_calcitriol_produce_by_TPT found no solution for "
                                f"a peak calcitriol ratio of {CALCITRIOL_RISE_TARGET}, and calcitriol.py has no value "
@@ -470,7 +469,7 @@ def run_simulation(fixed=None):
         raise ValueError("CALIBRATE_CALCITRIOL_TPT is False but calcitriol.k_increase_calcitriol_produce_by_TPT is None.")
     if fixed is not None:
         k_increase, calibrated = fixed["k_increase"], True
-    elif CALIBRATE_CALCITRIOL_TPT:   # calibrated at the REFERENCE dose (item 11), not the scenario dose
+    elif CALIBRATE_CALCITRIOL_TPT:   # calibrated at the REFERENCE dose, not the scenario dose
         k_increase, calibrated = calibrate_calcitriol_coefficient(time_min, TPT_reference, TPT_control, H)
     calcitriol_treated = solve_calcitriol(time_min, TPT_treated, k_increase, H["kidney"])
     calcitriol_control = solve_calcitriol(time_min, TPT_control, k_increase, H["kidney"])
@@ -478,7 +477,7 @@ def run_simulation(fixed=None):
     # --- Model 3: calcium, treated and control ---------------------------------------------
     if fixed is not None:
         CA_EFFECT_SCALE = fixed["ca_scale"]
-    elif CALIBRATE_CA_EFFECT:        # calibrated at the REFERENCE dose (item 6/13), not the scenario dose
+    elif CALIBRATE_CA_EFFECT:        # calibrated at the REFERENCE dose, not the scenario dose
         calcitriol_reference = solve_calcitriol(time_min, TPT_reference, k_increase, H["kidney"])
         calibrate_calcium_effect(time_min, TPT_reference, TPT_control, calcitriol_reference, calcitriol_control, H)
     calcium_treated = solve_calcium(time_min, TPT_treated, calcitriol_treated, H)
@@ -518,7 +517,7 @@ def compute_outputs(sim):
     out["Ca_blood_concen_mg_per_L"] = A.y[2] / tpt.Vol_blood_in_bone
     out["Ca_blood_control_mg_per_L"] = Ac.y[2] / tpt.Vol_blood_in_bone
     out["Ca_blood_TPT_effect_mg_per_dL"] = (out["Ca_blood_concen_mg_per_L"] - out["Ca_blood_control_mg_per_L"]) / 10
-    out["bone_Ca_levels_TPT_effect"] = A.y[4] - Ac.y[4]   # treated minus control (was the treated amount only)
+    out["bone_Ca_levels_TPT_effect"] = A.y[4] - Ac.y[4]   # treated minus control
 
     # Rates over time (for plots)
     out["rates"] = calcium_rates(T.y[2], T.y[4], C.y[1], H, A.y[2])
@@ -652,7 +651,7 @@ def make_plots_daily(sim, out):
 
 
 def make_plots_single(sim, out):
-    """Figures 3-4 from the single-injection run. Figure 3 (calcium): DAYS. Figure 4 (bone repair): HOURS."""
+    """Figures 3-4 from the daily-dosing run. Figure 3 (calcium): DAYS. Figure 4 (bone repair): HOURS."""
     t = sim["time"]
     A, Ac = sim["calcium"], sim["calcium_control"]
     d = t / 1440                                   # days
@@ -721,30 +720,8 @@ def make_plots_single(sim, out):
     return figures
 
 
-def run_single_dose_view(daily_sim):
-    """One injection over SINGLE_DOSE_DAYS, reusing the daily run's calibration so both views describe the same model."""
-    global SIM_MINUTES, N_DOSES
-    saved = SIM_MINUTES, N_DOSES
-    SIM_MINUTES, N_DOSES = SINGLE_DOSE_DAYS * 24 * 60, 1
-    try:
-        fixed = dict(H=daily_sim["H"], k_increase=daily_sim["k_increase"], ca_scale=daily_sim["ca_scale"])
-        sim = run_simulation(fixed)
-        return sim, compute_outputs(sim)
-    finally:
-        SIM_MINUTES, N_DOSES = saved
-
-
-def make_plots(sim, out, sim1, out1):
-    """TPT and calcitriol figures from the daily run (sim, out); calcium and bone figures from the single dose (sim1, out1)."""
-    figures = {**make_plots_daily(sim, out), **make_plots_single(sim1, out1)}
-    if SAVE_FIGURES:
-        for name, fig in figures.items():
-            fig.savefig(f"fig_{name}.png", dpi=110)
-    return figures
-
-
 # =====================================================================
-# 8. MONTE CARLO (item 15)
+# 8. MONTE CARLO
 # =====================================================================
 def run_monte_carlo():
     """Calibrate once on the healthy default draw (seed 0) at the reference dose, then re-draw the uncertain
@@ -827,7 +804,7 @@ if __name__ == "__main__":
             simulation = run_simulation(fixed)             # disease states reuse the healthy calibration
 
         outputs = compute_outputs(simulation)
-        print(f"DAILY DOSING, {SIM_DAYS} days  (TPT and calcitriol figures)")
+        print(f"DAILY DOSING, {SIM_DAYS} days")
         print_summary(simulation, outputs)
             
         # Gather all figures

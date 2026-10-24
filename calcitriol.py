@@ -1,10 +1,8 @@
 """Calcitriol parameters. Units: mg, mmol TPT, minutes, and liters.
 
-None means the value has intentionally been left blank. Enter new values in
-the units shown here; no missing parameter values have been estimated.
+k_increase_calcitriol_produce_by_TPT is left as None because it is calibrated in main.py.
+Disease-state changes (osteoporosis, renal failure) are applied in main.py, apply_conditions().
 """
-
-
 
 import math
 
@@ -17,7 +15,7 @@ k_gut_to_blood_calcitriol = 0.2
 k_blood_to_liver_calcitriol = 0.2
 K_liver_to_blood_calcitriol = 0.2
 
-# Listed in the document but absent from the original ODEs
+# Only used if INCLUDE_BLOOD_TO_GUT_CALCITRIOL = True in main.py (off by default)
 k_blood_to_gut_calcitriol = 0.2
 
 # HALF-LIFE (min)
@@ -31,26 +29,9 @@ PMOL_TO_MG = 416.64e-9
 basal_calcitriol_produce_kidney = 3.1 * PMOL_TO_MG
 
 # TPT-dependent production coefficient
-# Not specified numerically in the document
+# No literature value; calibrated in main.py so one dose raises blood calcitriol 80%
 k_increase_calcitriol_produce_by_TPT = None
 
-
-# CONDITIONS: False keeps the healthy baseline.
-osteoporosis = False
-renal_failure = False
-low_estrogen = False
-
-if osteoporosis:
-    print("Osteoporosis has no assumed calcitriol parameter changes.")
-
-if renal_failure:
-    if basal_calcitriol_produce_kidney is None or calcitriol_half_life is None:
-        raise ValueError("Fill in healthy calcitriol production and half-life first.")
-    basal_calcitriol_produce_kidney *= 14.2 / 31.8
-    calcitriol_half_life /= 0.45 / 0.58
-
-if low_estrogen:
-    print("Low estrogen has no assumed calcitriol parameter changes.")
 
 
 # INITIAL CONDITIONS (mg)
@@ -59,7 +40,6 @@ if low_estrogen:
 #   liver:  k_BL*B = k_LB*L        ->  L = (k_BL/k_LB)*B
 #   blood:  k_KB*K = k_BK*B        ->  K = (k_BK/k_KB)*B
 #   kidney: P + k_BK*B = (k_KB + k_d)*K  ->  B = P*k_KB/(k_d*k_BK)
-# Old reported values (pmol): kidney 153.5, blood 273.5, liver 891.5, gut 594.5
 # Only the kidney degrades calcitriol, but at steady state the kidney holds only part of the total
 # (kidney : blood : liver = k_BK/k_KB : 1 : k_BL/k_LB), so scale the kidney rate by total/kidney.
 # Then the whole body clears calcitriol with the half-life entered above.
