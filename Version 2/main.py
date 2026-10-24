@@ -33,25 +33,24 @@ import tpt
 import calcitriol
 import calcium
 
-
-
-
-osteoporosis = False 
-renal_failure =False
 grey_market = False
 
 
-def apply_conditions():
-    """Apply the disease conditions, then recompute everything the parameter modules derived from the changed values
-    (they compute rates and starting amounts once, at import, so overriding a value alone has no effect).
-    Call once after importing, and again after every importlib.reload (a reload resets the modules)."""
-    if osteoporosis is True:
+def apply_conditions(condition="healthy", seed = 0):
+    """Apply the disease conditions, then recompute everything the parameter modules derived from the changed values.
+    Call once after importing, and again to switch states."""
+    np.random.seed(seed)   # same random draws for every condition, so differences come from the condition only
+    # Reset modules to their base state for clean runs
+    for module in (tpt, calcitriol, calcium):
+        importlib.reload(module)
+
+    if condition == "osteoporosis":
         calcium.calcitriol_sensitivity = np.random.uniform(0.2, 0.6)
         calcium.intial_bone_Ca = (1.0e6) * (0.844)    # mg; 1 kg = 1,000,000 mg; bone mass reduced by 15.6% in osteoporosis
         tpt.k_elimination_TPT = tpt.k_elimination_TPT / 2
         print("Osteoporosis has no assumed calcitriol parameter changes.")
 
-    if renal_failure is True:
+    if condition == "renal_failure":
         if calcitriol.basal_calcitriol_produce_kidney is None or calcitriol.calcitriol_half_life is None:
             raise ValueError("Fill in healthy calcitriol production and half-life first.")
         tpt.k_diffuse_TPT = tpt.k_diffuse_TPT / 1.73
@@ -92,7 +91,7 @@ def apply_conditions():
                                calcium.initial_kidney_Ca, calcium.intial_bone_Ca]
 
 
-apply_conditions()
+apply_conditions("healthy")
 
 # =====================================================================
 # 0. SETTINGS  (the only things you should need to change here)
@@ -113,7 +112,7 @@ BONE_PLOT_HOURS = 24               # bone-repair figure x-axis window in hours (
 DOSE_SCALE = 1.0
 
 # MONTE CARLO (item 15): re-draw every uncertain parameter N_RUNS times and run each scenario with the same draws.
-RUN_MONTE_CARLO = False
+
 N_RUNS = 100
 SCENARIOS = {                                   # dose relative to the 20 ug reference
     "reference (20 ug)": 1.0,
@@ -740,7 +739,7 @@ def run_monte_carlo():
     np.random.seed(0)
     for module in (tpt, calcitriol, calcium):
         importlib.reload(module)
-    apply_conditions()                               # a reload resets the modules, so re-apply the conditions
+    apply_conditions("healthy")                             # a reload resets the modules, so re-apply the conditions
     DOSE_SCALE = 1.0
     nominal = run_simulation()
     fixed = dict(H=nominal["H"], k_increase=nominal["k_increase"], ca_scale=nominal["ca_scale"])
@@ -748,9 +747,7 @@ def run_monte_carlo():
                       "calcitriol peak (x baseline)": []} for name in SCENARIOS}
     for run in range(N_RUNS):
         np.random.seed(run + 1)                      # draw number = seed - 1, so any run can be repeated
-        for module in (tpt, calcitriol, calcium):    # re-import = new random draws
-            importlib.reload(module)
-        apply_conditions()
+        apply_conditions("healthy")                  # Reloads modules and applies default condition
         try:
             for name, dose_scale in SCENARIOS.items():
                 DOSE_SCALE = dose_scale
@@ -788,14 +785,40 @@ def run_monte_carlo():
 # 9. RUN
 # =====================================================================
 if __name__ == "__main__":
-    simulation = run_simulation()                      # daily dosing
-    outputs = compute_outputs(simulation)
-    print(f"DAILY DOSING, {SIM_DAYS} days  (TPT and calcitriol figures)")
-    print_summary(simulation, outputs)
-    single_sim, single_out = run_single_dose_view(simulation)
-    print(f"SINGLE INJECTION, {SINGLE_DOSE_DAYS} days  (calcium and bone-repair figures)")
-    print_summary(single_sim, single_out)
-    make_plots(simulation, outputs, single_sim, single_out)
-    if RUN_MONTE_CARLO:
-        run_monte_carlo()
-    plt.show()
+    from matplotlib.backends.backend_pdf import PdfPages
+    
+    conditions = ["healthy", "osteoporosis", "renal_failure"]
+    
+    for condition in conditions:
+        print(f"\n\n{'='*78}\nRUNNING CONDITION: {condition.upper()}\n{'='*78}")
+        apply_conditions(condition)
+        
+        if condition == "healthy":
+            simulation = run_simulation()                  # calibrate once on the healthy state
+            fixed = dict(H=simulation["H"], k_increase=simulation["k_increase"], ca_scale=simulation["ca_scale"])
+        else:
+            simulation = run_simulation(fixed)             # disease states reuse the healthy calibration
+
+        outputs = compute_outputs(simulation)
+        print(f"DAILY DOSING, {SIM_DAYS} days  (TPT and calcitriol figures)")
+        print_summary(simulation, outputs)
+        
+        single_sim, single_out = run_single_dose_view(simulation)
+        print(f"SINGLE INJECTION, {SINGLE_DOSE_DAYS} days  (calcium and bone-repair figures)")
+        print_summary(single_sim, single_out)
+        
+        # Gather all figures
+        figures = {**make_plots_daily(simulation, outputs), **make_plots_single(single_sim, single_out)}
+        
+        # Save all figures for this condition into a single multi-page PDF
+        if SAVE_FIGURES:
+            filename = f"results_{condition}.pdf"
+            with PdfPages(filename) as pdf:
+                for name, fig in figures.items():
+                    pdf.savefig(fig)
+            print(f"Saved all combined plots for {condition} to {filename}")
+            
+        # Clear plots to prevent overlapping/memory leak in the next loop
+        for fig in figures.values():
+            plt.close(fig)
+ 
