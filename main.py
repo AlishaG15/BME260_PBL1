@@ -830,6 +830,10 @@ if __name__ == "__main__":
                 for name, fig in figures.items():
                     fig.savefig(os.path.join(FIGURE_FOLDER, f"fig_{name}_{condition}.png"), dpi=110)
             print(f"Saved {condition} figures to {FIGURE_FOLDER}/ as {FIGURE_FORMAT}")
+            
+        # Clear plots to prevent overlapping/memory leak in the next loop
+        for fig in figures.values():
+            plt.close(fig)
 
     # MONTE CARLO: reruns the healthy model N_RUNS times with new parameter draws; saves one boxplot (fig_5_monte_carlo.png)
     if RUN_MONTE_CARLO:
