@@ -795,7 +795,6 @@ def run_monte_carlo():
 # 9. RUN
 # =====================================================================
 if __name__ == "__main__":
-    from matplotlib.backends.backend_pdf import PdfPages
     
     conditions = ["healthy", "osteoporosis", "renal_failure"]
     
@@ -815,13 +814,11 @@ if __name__ == "__main__":
             
         # Gather all figures
         figures = {**make_plots_daily(simulation, outputs), **make_plots_single(simulation, outputs)}
-        # Save all figures for this condition into a single multi-page PDF
+        # Save each figure for this condition as a PNG (e.g. fig_1_TPT_healthy.png)
         if SAVE_FIGURES:
-            filename = f"results_{condition}.pdf"
-            with PdfPages(filename) as pdf:
-                for name, fig in figures.items():
-                    pdf.savefig(fig)
-            print(f"Saved all combined plots for {condition} to {filename}")
+            for name, fig in figures.items():
+                fig.savefig(f"fig_{name}_{condition}.png", dpi=110)
+            print(f"Saved {len(figures)} figures for {condition} as fig_*_{condition}.png")
             
         # Clear plots to prevent overlapping/memory leak in the next loop
         for fig in figures.values():
