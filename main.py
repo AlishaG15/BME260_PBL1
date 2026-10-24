@@ -18,6 +18,7 @@ FLAGS FOR YOU: search this file for "ASSUMPTION" and "SWITCH"; they mark every i
 """
 
 import importlib
+import os
 import math
 from types import SimpleNamespace
 
@@ -162,6 +163,8 @@ ALP_MAX_INCREASE = 0.78
 ALP_FULL_EFFECT_RISE_MG_PER_DL = 0.4   # mg/dL; same as LABEL_CALCIUM_PEAK_RISE_MG_PER_DL below
 
 SAVE_FIGURES = True
+FIGURE_FORMAT = "png"             # "png": each figure as its own PNG; "pdf": one PDF per condition. Both save into the figures folder
+FIGURE_FOLDER = "figures"
 LABEL_CALCIUM_PEAK_RISE_MG_PER_DL = 0.4   # FORTEO label: ~+0.4 mg/dL serum Ca, shown on the plot for reference
 
 # SWITCH (item 6/13): scale the three TPT -> calcium effects (bone release, kidney reabsorption, calcitriol -> gut)
@@ -787,7 +790,8 @@ def run_monte_carlo():
     ax.set(title=f"Peak rise in blood calcium, {N_RUNS} Monte Carlo draws", ylabel="mg/dL"); ax.legend()
     fig.tight_layout()
     if SAVE_FIGURES:
-        fig.savefig("fig_5_monte_carlo.png", dpi=110)
+        os.makedirs(FIGURE_FOLDER, exist_ok=True)
+        fig.savefig(os.path.join(FIGURE_FOLDER, f"fig_5_monte_carlo.{FIGURE_FORMAT}"), dpi=110)
     return results
 
 
@@ -814,15 +818,18 @@ if __name__ == "__main__":
             
         # Gather all figures
         figures = {**make_plots_daily(simulation, outputs), **make_plots_single(simulation, outputs)}
-        # Save each figure for this condition as a PNG (e.g. fig_1_TPT_healthy.png)
+        # Save this condition's figures into the figures folder, as PNGs or one PDF (FIGURE_FORMAT in the settings)
         if SAVE_FIGURES:
-            for name, fig in figures.items():
-                fig.savefig(f"fig_{name}_{condition}.png", dpi=110)
-            print(f"Saved {len(figures)} figures for {condition} as fig_*_{condition}.png")
-            
-        # Clear plots to prevent overlapping/memory leak in the next loop
-        for fig in figures.values():
-            plt.close(fig)
+            os.makedirs(FIGURE_FOLDER, exist_ok=True)
+            if FIGURE_FORMAT == "pdf":
+                from matplotlib.backends.backend_pdf import PdfPages
+                with PdfPages(os.path.join(FIGURE_FOLDER, f"results_{condition}.pdf")) as pdf:
+                    for fig in figures.values():
+                        pdf.savefig(fig)
+            else:
+                for name, fig in figures.items():
+                    fig.savefig(os.path.join(FIGURE_FOLDER, f"fig_{name}_{condition}.png"), dpi=110)
+            print(f"Saved {condition} figures to {FIGURE_FOLDER}/ as {FIGURE_FORMAT}")
 
     # MONTE CARLO: reruns the healthy model N_RUNS times with new parameter draws; saves one boxplot (fig_5_monte_carlo.png)
     if RUN_MONTE_CARLO:
