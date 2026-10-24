@@ -108,6 +108,7 @@ PLOT_DETAIL_DAYS = None            # daily-dosing figures (TPT, calcitriol): Non
 # The calcium and bone-repair figures (3 and 4) come from a separate SINGLE-injection run with the same calibration.
 SINGLE_DOSE_DAYS = 7             # length of that run
 SINGLE_DOSE_DETAIL_HOURS = 24      # its fast panels (amounts, blood Ca) zoom to this window; bone panels show all days
+BONE_PLOT_HOURS = 24               # bone-repair figure x-axis window in hours (None = whole run)
 # SCENARIO: dose relative to the standard 20 ug injection (1.0 = reference dose, 1.35 = gray-market overdose)
 DOSE_SCALE = 1.0
 
@@ -590,15 +591,14 @@ def print_summary(sim, out):
 # 7. PLOTS
 # =====================================================================
 def make_plots_daily(sim, out):
-    """Figures 1-2 (TPT, calcitriol) from the daily-dosing run."""
+    """Figures 1-2 (TPT, calcitriol) from the daily-dosing run. X-axis in MINUTES."""
     t, T, Tc = sim["time"], sim["TPT"], sim["TPT_control"]
     C = sim["calcitriol"]
-    d = t / 1440                                               # every x-axis is in days
-    xmax = PLOT_DETAIL_DAYS if PLOT_DETAIL_DAYS else d[-1]
-    doses = dose_times_min(t, sim["n_doses"]) / 1440
+    xmax = PLOT_DETAIL_DAYS * 1440 if PLOT_DETAIL_DAYS else t[-1]
+    doses = dose_times_min(t, sim["n_doses"])                  # minutes
     figures = {}
 
-    def finish(axes, xlabel="Time (days)"):
+    def finish(axes, xlabel="Time (min)"):
         """Common x-range, label and faint vertical lines at each injection."""
         for a in np.ravel(axes):
             a.set_xlim(0, xmax)
@@ -609,18 +609,18 @@ def make_plots_daily(sim, out):
     # ---- Figure 1: TPT pharmacokinetics ----------------------------------------------------
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
     for index, label in enumerate(["Injection site", "Blood", "Kidney", "Liver", "Bone"]):
-        ax[0, 0].plot(d, T.y[index], label=label)
+        ax[0, 0].plot(t, T.y[index], label=label)
     ax[0, 0].set(title="TPT amount in each compartment", ylabel="TPT amount (mmol)")
     ax[0, 0].legend(fontsize=8)
-    ax[0, 1].plot(d, out["TPT_blood_concen_ng_per_mL"])
+    ax[0, 1].plot(t, out["TPT_blood_concen_ng_per_mL"])
     peak_c = np.max(out["TPT_blood_concen_ng_per_mL"])
     ax[0, 1].set(title=f"TPT blood concentration (peak {peak_c:.3f} ng/mL, first peak at {out['TPT_time_to_peak_min']:.0f} min)", ylabel="ng/mL")
-    ax[1, 0].plot(d, out["TPT_kidney_ng"])
+    ax[1, 0].plot(t, out["TPT_kidney_ng"])
     ax[1, 0].set(title="TPT in kidney", ylabel="ng")
-    ax[1, 1].plot(d, out["rates"]["hill_kidney"], label="kidney Hill (treated)")
-    ax[1, 1].plot(d, out["rates"]["hill_bone"], label="bone Hill (treated)")
-    ax[1, 1].plot(d, out["rates_control"]["hill_kidney"], "--", label="kidney Hill (control)")
-    ax[1, 1].plot(d, out["rates_control"]["hill_bone"], "--", label="bone Hill (control)")
+    ax[1, 1].plot(t, out["rates"]["hill_kidney"], label="kidney Hill (treated)")
+    ax[1, 1].plot(t, out["rates"]["hill_bone"], label="bone Hill (treated)")
+    ax[1, 1].plot(t, out["rates_control"]["hill_kidney"], "--", label="kidney Hill (control)")
+    ax[1, 1].plot(t, out["rates_control"]["hill_bone"], "--", label="bone Hill (control)")
     ax[1, 1].set(title="TPT effect signals (0 to 1)", ylim=(-0.02, 1.05))
     ax[1, 1].legend(fontsize=8)
     finish(ax)
@@ -629,14 +629,14 @@ def make_plots_daily(sim, out):
     # ---- Figure 2: calcitriol ---------------------------------------------------------------
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.5))
     for index, label in enumerate(["Kidney", "Blood", "Liver", "Gut"]):
-        ax[0].plot(d, C.y[index], label=label)
+        ax[0].plot(t, C.y[index], label=label)
     ax[0].set(title="Calcitriol amount (treated)", ylabel="mg"); ax[0].legend(fontsize=8)
-    ax[1].plot(d, out["calcitriol_blood_pg_per_mL"], label="treated")
-    ax[1].plot(d, out["calcitriol_blood_control_pg_per_mL"], "--", label="control")
+    ax[1].plot(t, out["calcitriol_blood_pg_per_mL"], label="treated")
+    ax[1].plot(t, out["calcitriol_blood_control_pg_per_mL"], "--", label="control")
     ax[1].axhline(calcium.calcitriol_basal_level * 1e6, color="gray", lw=0.7, label="basal level")
     ax[1].set(title="Blood calcitriol", ylabel="pg/mL"); ax[1].legend(fontsize=8)
-    ax[2].plot(d, out["rates"]["calcitriol_impact"], label="treated")
-    ax[2].plot(d, out["rates_control"]["calcitriol_impact"], "--", label="control")
+    ax[2].plot(t, out["rates"]["calcitriol_impact"], label="treated")
+    ax[2].plot(t, out["rates_control"]["calcitriol_impact"], "--", label="control")
     ax[2].set(title="Calcitriol effect on gut absorption (1 = basal)", ylabel="Multiplier (k)"); ax[2].legend(fontsize=8)
     finish(ax)
     fig.suptitle("2. Calcitriol"); fig.tight_layout(); figures["2_calcitriol"] = fig
@@ -645,60 +645,65 @@ def make_plots_daily(sim, out):
 
 
 def make_plots_single(sim, out):
-    """Figures 3-4 (calcium, bone repair) from the single-injection run: fast panels zoomed, bone panels in days."""
+    """Figures 3-4 from the single-injection run. Figure 3 (calcium): DAYS. Figure 4 (bone repair): HOURS."""
     t = sim["time"]
     A, Ac = sim["calcium"], sim["calcium_control"]
-    h, d = t / 60, t / 1440
-    dm, dh = SINGLE_DOSE_DETAIL_HOURS * 60, SINGLE_DOSE_DETAIL_HOURS
+    d = t / 1440                                   # days
+    hr = t / 60                                    # hours
+    detail_days = SINGLE_DOSE_DETAIL_HOURS / 24    # zoom window for the fast calcium panels
+    bone_xmax = BONE_PLOT_HOURS if BONE_PLOT_HOURS else hr[-1]
     figures = {}
 
-    # ---- Figure 3: calcium ------------------------------------------------------------------
+    # ---- Figure 3: calcium (days) -----------------------------------------------------------
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
     for index, label in enumerate(["Intake", "Gut", "Blood", "Kidney"]):
-        ax[0, 0].plot(t, A.y[index], label=label)
-    ax[0, 0].set(title="Calcium amount, treated (bone shown separately)", xlabel="Time (min)", ylabel="mg", xlim=(0, dm))
+        ax[0, 0].plot(d, A.y[index], label=label)
+    ax[0, 0].set(title="Calcium amount, treated (bone shown separately)", xlabel="Time (days)", ylabel="mg", xlim=(0, detail_days))
     ax[0, 0].legend(fontsize=8)
     ax[0, 1].plot(d, A.y[4], label="treated")
     ax[0, 1].plot(d, Ac.y[4], "--", label="control")
     lo, hi = min(A.y[4].min(), Ac.y[4].min()), max(A.y[4].max(), Ac.y[4].max())
-    pad = max(0.15 * (hi - lo), 1.0)                          # zoom the y-axis so the (small) difference is visible
+    pad = max(0.15 * (hi - lo), 1.0)
     ax[0, 1].set_ylim(lo - pad, hi + pad)
     ax[0, 1].ticklabel_format(axis="y", style="plain", useOffset=False)
     ax[0, 1].set(title="Bone calcium: treated vs control (y-axis zoomed)", xlabel="Time (days)", ylabel="mg")
     ax[0, 1].legend(fontsize=8)
-    ax[1, 0].plot(h, out["Ca_blood_concen_mg_per_L"] / 10, label="treated")
-    ax[1, 0].plot(h, out["Ca_blood_control_mg_per_L"] / 10, "--", label="control")
-    ax[1, 0].set(title="Blood calcium", xlabel="Time (h)", ylabel="mg/dL", xlim=(0, dh)); ax[1, 0].legend(fontsize=8)
-    ax[1, 1].plot(h, out["Ca_blood_TPT_effect_mg_per_dL"])
+    ax[1, 0].plot(d, out["Ca_blood_concen_mg_per_L"] / 10, label="treated")
+    ax[1, 0].plot(d, out["Ca_blood_control_mg_per_L"] / 10, "--", label="control")
+    ax[1, 0].set(title="Blood calcium", xlabel="Time (days)", ylabel="mg/dL", xlim=(0, detail_days)); ax[1, 0].legend(fontsize=8)
+    ax[1, 1].plot(d, out["Ca_blood_TPT_effect_mg_per_dL"])
     ax[1, 1].axhline(LABEL_CALCIUM_PEAK_RISE_MG_PER_DL, color="gray", ls=":", label="label peak (+0.4)")
-    ax[1, 1].set(title="TPT effect on blood calcium levels", xlabel="Time (h)", ylabel="mg/dL", xlim=(0, dh))
+    ax[1, 1].set(title="TPT effect on blood calcium levels", xlabel="Time (days)", ylabel="mg/dL", xlim=(0, detail_days))
     ax[1, 1].legend(fontsize=8)
     fig.suptitle("3. Calcium (single injection)"); fig.tight_layout(); figures["3_calcium"] = fig
 
-    # ---- Figure 4: bone repair (ALP-driven formation) vs resorption ---------------------------
+    # ---- Figure 4: bone repair (ALP-driven formation) vs resorption (hours) ------------------
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    ax[0, 0].plot(h, out["ALP_increase_pct"], color="tab:green", label="ALP increase (%)")
+    ax[0, 0].plot(hr, out["ALP_increase_pct"], color="tab:green", label="ALP increase (%)")
     ax[0, 0].set(title=f"ALP rise driven by elevated blood Ca (max {ALP_MAX_INCREASE*100:.0f}%)", xlabel="Time (h)",
-                 ylabel="ALP increase vs baseline (%)", xlim=(0, dh))
+                 ylabel="ALP increase vs baseline (%)")
     twin = ax[0, 0].twinx()
-    twin.plot(h, out["Ca_blood_TPT_effect_mg_per_dL"], color="tab:red", ls="--", label="blood Ca rise")
+    twin.plot(hr, out["Ca_blood_TPT_effect_mg_per_dL"], color="tab:red", ls="--", label="blood Ca rise")
     twin.set_ylabel("Blood Ca rise (mg/dL)")
     ax[0, 0].legend(loc="upper left", fontsize=8); twin.legend(loc="upper right", fontsize=8)
-    ax[0, 1].plot(h, out["bone_formation_flux"] * 60, label="formation (repair), treated")
-    ax[0, 1].plot(h, out["bone_formation_flux_control"] * 60, "--", label="formation, control")
-    ax[0, 1].plot(h, out["bone_release_flux"] * 60, label="release (resorption), treated")
-    ax[0, 1].plot(h, out["bone_release_flux_control"] * 60, "--", label="release, control")
-    ax[0, 1].set(title="Bone calcium fluxes", xlabel="Time (h)", ylabel="mg Ca per hour", xlim=(0, dh))
+    ax[0, 1].plot(hr, out["bone_formation_flux"] * 60, label="formation (repair), treated")
+    ax[0, 1].plot(hr, out["bone_formation_flux_control"] * 60, "--", label="formation, control")
+    ax[0, 1].plot(hr, out["bone_release_flux"] * 60, label="release (resorption), treated")
+    ax[0, 1].plot(hr, out["bone_release_flux_control"] * 60, "--", label="release, control")
+    ax[0, 1].set(title="Bone calcium fluxes", xlabel="Time (h)", ylabel="mg Ca per hour")
     ax[0, 1].legend(fontsize=8)
-    ax[1, 0].plot(d, out["extra_formation_mg"], label="extra formation (repair)")
-    ax[1, 0].plot(d, -out["extra_release_mg"], label="extra release (resorption), shown negative")
-    ax[1, 0].plot(d, out["bone_Ca_levels_TPT_effect"], "k:", label="net change in bone Ca")
+    ax[1, 0].plot(hr, out["extra_formation_mg"], label="extra formation (repair)")
+    ax[1, 0].plot(hr, -out["extra_release_mg"], label="extra release (resorption), shown negative")
+    ax[1, 0].plot(hr, out["bone_Ca_levels_TPT_effect"], "k:", label="net change in bone Ca")
     ax[1, 0].axhline(0, color="gray", lw=0.7)
-    ax[1, 0].set(title="Running totals of TPT effect on bone (treated - control)", xlabel="Time (days)", ylabel="mg")
+    ax[1, 0].set(title="Running totals of TPT effect on bone (treated - control)", xlabel="Time (h)", ylabel="mg")
     ax[1, 0].legend(fontsize=8)
-    ax[1, 1].plot(d, out["bone_Ca_levels_TPT_effect"])
+    ax[1, 1].plot(hr, out["bone_Ca_levels_TPT_effect"])
     ax[1, 1].axhline(0, color="gray", lw=0.7)
-    ax[1, 1].set(title="Net bone calcium change (treated - control)", xlabel="Time (days)", ylabel="mg")
+    ax[1, 1].set(title="Net bone calcium change (treated - control)", xlabel="Time (h)", ylabel="mg")
+    for a in ax.ravel():
+        a.set_xlim(0, bone_xmax)
+    twin.set_xlim(0, bone_xmax)
     fig.suptitle("4. Bone repair vs resorption (single injection)"); fig.tight_layout(); figures["4_bone"] = fig
     return figures
 
