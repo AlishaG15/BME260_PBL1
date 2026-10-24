@@ -38,7 +38,7 @@ import calcium
 
 osteoporosis = False 
 renal_failure =False
-grey_market = True 
+grey_market = False
 
 
 def apply_conditions():
@@ -116,7 +116,7 @@ RUN_MONTE_CARLO = False
 N_RUNS = 100
 SCENARIOS = {                                   # dose relative to the 20 ug reference
     "reference (20 ug)": 1.0,
-    "gray-market overdose (+35%)": 1.35,        # problem statement: online semaglutide vials held 29-39% extra
+    "gray-market overdose (+35%)": 1.35,        
     "degraded product (-30%)": 0.70,            # ASSUMPTION: example of peptide lost to degradation
 }
 STEP_MIN = 2                       # output time step (min)
