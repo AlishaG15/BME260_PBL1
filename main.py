@@ -117,7 +117,8 @@ DOSE_SCALE = 1.0
 
 # MONTE CARLO (item 15): re-draw every uncertain parameter N_RUNS times and run each scenario with the same draws.
 
-RUN_MONTE_CARLO = True             # takes a few minutes; set False to skip
+RUN_MONTE_CARLO = True             # takes ~10-12 min with all three conditions; set False to skip
+MC_CONDITIONS = ["healthy", "osteoporosis", "renal_failure"]   # patient states the Monte Carlo runs
 N_RUNS = 100
 SCENARIOS = {                                   # dose relative to the 20 ug reference
     "reference (20 ug)": 1.0,
@@ -746,48 +747,61 @@ def make_plots(sim, out, sim1, out1):
 # 8. MONTE CARLO (item 15)
 # =====================================================================
 def run_monte_carlo():
-    """Calibrate once on the default draw (seed 0) at the reference dose, then re-draw the uncertain parameters
-    N_RUNS times and run every scenario with the calibration held fixed. Prints median [5th-95th percentile]."""
+    """Calibrate once on the healthy default draw (seed 0) at the reference dose, then re-draw the uncertain
+    parameters N_RUNS times and run every condition and dose scenario with the calibration held fixed.
+    Each draw uses the same seed for every condition, so differences between conditions come from the condition only.
+    Prints median [5th-95th percentile] and saves one boxplot of the peak Ca rise."""
     global DOSE_SCALE
-    np.random.seed(0)
-    for module in (tpt, calcitriol, calcium):
-        importlib.reload(module)
-    apply_conditions("healthy")                             # a reload resets the modules, so re-apply the conditions
+    apply_conditions("healthy", seed=0)                     # reloads the modules with the default draw
     DOSE_SCALE = 1.0
     nominal = run_simulation()
     fixed = dict(H=nominal["H"], k_increase=nominal["k_increase"], ca_scale=nominal["ca_scale"])
-    results = {name: {"TPT peak (ng/mL)": [], "Ca rise peak (mg/dL)": [], "Ca peak time (h)": [],
-                      "calcitriol peak (x baseline)": []} for name in SCENARIOS}
+    results = {(condition, name): {"TPT peak (ng/mL)": [], "Ca rise peak (mg/dL)": [], "Ca peak time (h)": [],
+                                   "calcitriol peak (x baseline)": []}
+               for condition in MC_CONDITIONS for name in SCENARIOS}
     for run in range(N_RUNS):
-        np.random.seed(run + 1)                      # draw number = seed - 1, so any run can be repeated
-        apply_conditions("healthy", seed=run + 1)    # reloads the modules with this draw's seed
-        try:
-            for name, dose_scale in SCENARIOS.items():
-                DOSE_SCALE = dose_scale
-                sim = run_simulation(fixed)
-                out = compute_outputs(sim)
-                effect = out["Ca_blood_TPT_effect_mg_per_dL"]
-                r = results[name]
-                r["TPT peak (ng/mL)"].append(np.max(out["TPT_blood_concen_ng_per_mL"]))
-                r["Ca rise peak (mg/dL)"].append(np.max(effect))
-                first = sim["time"] <= DOSE_INTERVAL_MIN                    # timing of the first-dose peak
-                r["Ca peak time (h)"].append(sim["time"][first][np.argmax(effect[first])] / 60)
-                r["calcitriol peak (x baseline)"].append(np.max(out["calcitriol_blood_pg_per_mL"]
-                                                                / out["calcitriol_blood_control_pg_per_mL"]))
-        except (ValueError, RuntimeError) as error:  # a draw that cannot be calibrated is skipped and reported
-            print(f"  draw {run} skipped: {error}")
+        for condition in MC_CONDITIONS:
+            apply_conditions(condition, seed=run + 1)     # reloads the modules with this draw's seed, then applies the condition
+            try:
+                for name, dose_scale in SCENARIOS.items():
+                    DOSE_SCALE = dose_scale
+                    sim = run_simulation(fixed)
+                    out = compute_outputs(sim)
+                    effect = out["Ca_blood_TPT_effect_mg_per_dL"]
+                    r = results[(condition, name)]
+                    r["TPT peak (ng/mL)"].append(np.max(out["TPT_blood_concen_ng_per_mL"]))
+                    r["Ca rise peak (mg/dL)"].append(np.max(effect))
+                    first = sim["time"] <= DOSE_INTERVAL_MIN                    # timing of the first-dose peak
+                    r["Ca peak time (h)"].append(sim["time"][first][np.argmax(effect[first])] / 60)
+                    r["calcitriol peak (x baseline)"].append(np.max(out["calcitriol_blood_pg_per_mL"]
+                                                                    / out["calcitriol_blood_control_pg_per_mL"]))
+            except (ValueError, RuntimeError) as error:  # a draw that cannot be solved is skipped and reported
+                print(f"  draw {run} ({condition}) skipped: {error}")
+    DOSE_SCALE = 1.0
     print("=" * 78)
     print(f"MONTE CARLO: {N_RUNS} draws, median [5th - 95th percentile]")
-    for name, r in results.items():
-        print(f"  {name}  (n = {len(r['Ca rise peak (mg/dL)'])})")
+    for (condition, name), r in results.items():
+        print(f"  {condition} | {name}  (n = {len(r['Ca rise peak (mg/dL)'])})")
         for label, values in r.items():
             low, mid, high = np.percentile(values, [5, 50, 95])
             print(f"      {label:30s} {mid:7.3f}  [{low:.3f} - {high:.3f}]")
-    fig, ax = plt.subplots(figsize=(7, 4))
-    ax.boxplot([r["Ca rise peak (mg/dL)"] for r in results.values()], whis=(5, 95))
-    ax.set_xticks(range(1, len(results) + 1)); ax.set_xticklabels(list(results), fontsize=8)
+
+    # One boxplot: conditions side by side, the three doses inside each condition
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    colors = ["tab:blue", "tab:red", "tab:gray"]                      # one color per dose scenario
+    n_doses = len(SCENARIOS)
+    for d, name in enumerate(SCENARIOS):
+        positions = [c * (n_doses + 1) + d + 1 for c in range(len(MC_CONDITIONS))]
+        box = ax.boxplot([results[(condition, name)]["Ca rise peak (mg/dL)"] for condition in MC_CONDITIONS],
+                         positions=positions, widths=0.8, whis=(5, 95), patch_artist=True)
+        for patch in box["boxes"]:
+            patch.set_facecolor(colors[d % len(colors)]); patch.set_alpha(0.5)
+        ax.plot([], [], color=colors[d % len(colors)], lw=8, alpha=0.5, label=name)   # legend entry
+    ax.set_xticks([c * (n_doses + 1) + (n_doses + 1) / 2 for c in range(len(MC_CONDITIONS))])
+    ax.set_xticklabels([condition.replace("_", " ") for condition in MC_CONDITIONS])
     ax.axhline(LABEL_CALCIUM_PEAK_RISE_MG_PER_DL, color="gray", ls=":", label="label peak (+0.4)")
-    ax.set(title=f"Peak rise in blood calcium, {N_RUNS} Monte Carlo draws", ylabel="mg/dL"); ax.legend()
+    ax.set(title=f"Peak rise in blood calcium, {N_RUNS} Monte Carlo draws (box 25-75%, whiskers 5-95%)", ylabel="mg/dL")
+    ax.legend(fontsize=8)
     fig.tight_layout()
     if SAVE_FIGURES:
         os.makedirs(FIGURE_FOLDER, exist_ok=True)
@@ -835,7 +849,7 @@ if __name__ == "__main__":
         for fig in figures.values():
             plt.close(fig)
 
-    # MONTE CARLO: reruns the healthy model N_RUNS times with new parameter draws; saves one boxplot (fig_5_monte_carlo.png)
+    # MONTE CARLO: reruns every condition N_RUNS times with new parameter draws; saves one boxplot (fig_5_monte_carlo.png)
     if RUN_MONTE_CARLO:
         run_monte_carlo()
  
