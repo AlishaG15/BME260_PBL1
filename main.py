@@ -51,7 +51,6 @@ def apply_conditions(condition="healthy", seed = 0):
         calcium.calcitriol_sensitivity = np.random.uniform(0.2, 0.6)
         calcium.intial_bone_Ca = (1.0e6) * (0.844)    # mg; 1 kg = 1,000,000 mg; bone mass reduced by 15.6% in osteoporosis
         tpt.k_elimination_TPT = tpt.k_elimination_TPT / 2
-        print("Osteoporosis has no assumed calcitriol parameter changes.")
 
     if condition == "renal_failure":
         if calcitriol.basal_calcitriol_produce_kidney is None or calcitriol.calcitriol_half_life is None:
