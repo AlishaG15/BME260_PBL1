@@ -6,7 +6,7 @@ WHAT IS MODELLED  (three linked compartment models, solved one after another)
   2. Calcitriol                            kidney, blood, liver, gut        <- driven by TPT in kidney
   3. Calcium                               intake, gut, blood, kidney, bone <- driven by TPT (kidney, bone) and calcitriol (blood)
 
-UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L   (the figures show concentrations: pmol/L, ng/mL, pg/mL, mg/dL)
+UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L   (the figures show concentrations: ng/mL, pg/mL, mg/dL)
 
 HOW THE RESULTS ARE READ
   Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). Every compartment starts at
@@ -661,8 +661,8 @@ def make_plots_daily(sim, out):
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
     for index, (key, label) in enumerate([("injection", "Injection site"), ("blood", "Blood"), ("kidney", "Kidney"),
                                           ("liver", "Liver"), ("bone", "Bone")]):
-        ax[0, 0].plot(t, T.y[index] / vol(key) * 1e9, label=label)      # mmol/L -> pmol/L
-    ax[0, 0].set(ylabel="TPT concentration in each compartment (pmol/L)")
+        ax[0, 0].plot(t, T.y[index] / vol(key) * tpt.mol_weight_TPT * 1000, label=label)   # mmol/L * mg/mmol * 1000 = ng/mL
+    ax[0, 0].set(ylabel="TPT concentration in each compartment (ng/mL)")
     ax[0, 0].legend(fontsize=8)
     ax[0, 1].plot(t, out["TPT_blood_concen_ng_per_mL"])
     peak_c = np.max(out["TPT_blood_concen_ng_per_mL"])
