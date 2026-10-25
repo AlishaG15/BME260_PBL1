@@ -6,7 +6,7 @@ WHAT IS MODELLED  (three linked compartment models, solved one after another)
   2. Calcitriol                            kidney, blood, liver, gut        <- driven by TPT in kidney
   3. Calcium                               intake, gut, blood, kidney, bone <- driven by TPT (kidney, bone) and calcitriol (blood)
 
-UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L
+UNITS   TPT: mmol | calcitriol and calcium: mg | time: min | volume: L   (the figures show concentrations: pmol/L, ng/mL, pg/mL, mg/dL)
 
 HOW THE RESULTS ARE READ
   Every model is solved twice: TREATED (TPT injection) and CONTROL (no injection). Every compartment starts at
@@ -46,7 +46,8 @@ GREY_OVERDOSE_RANGE = (1.28, 1.39)      # +28% to +39% increase in the amount ta
 def apply_conditions(condition="healthy", seed = 0):
     """Apply the disease conditions, then recompute everything the parameter modules derived from the changed values.
     Call once after importing, and again to switch states.
-    Returns this draw's DOSE SCALE (dose relative to the 20 ug reference): 1.0 for every state except grey_market."""
+    Returns this draw's DOSE SCALE (dose relative to the 20 ug reference): 1.0 for every state except grey_market
+    (about 0.10-0.19) and control (0.0)."""
     np.random.seed(seed)   # same random draws for every condition, so differences come from the condition only
     dose_scale = 1.0
     # Reset modules to their base state for clean runs
@@ -66,6 +67,9 @@ def apply_conditions(condition="healthy", seed = 0):
         tpt.k_elimination_TPT = tpt.k_elimination_TPT / 1.77
         calcitriol.basal_calcitriol_produce_kidney *= 14.2 / 31.8
         calcitriol.calcitriol_half_life /= 0.45 / 0.58
+
+    if condition == "control":
+        dose_scale = 0.0   # healthy physiology, no TPT injected: treated = control, so every TPT effect should be 0
 
     if condition == "grey_market":
         # No calcitriol or calcium parameter changes are assumed; only the delivered dose differs.
@@ -120,11 +124,12 @@ PLOT_DETAIL_DAYS = 1               # TPT and calcitriol figures zoom to this man
 SINGLE_DOSE_DETAIL_HOURS = 24      # calcium figure: fast panels (amounts, blood Ca) zoom to this window; bone panels show all days
 BONE_PLOT_HOURS = 24               # bone-repair figure x-axis window in hours (None = whole run)
 # DOSE SCALE is relative to the standard 20 ug injection (1.0 = reference). It is set per case state by apply_conditions():
-# 1.0 for healthy / osteoporosis / renal_failure, and potency x overdose (about 0.10-0.19) for grey_market.
+# 1.0 for healthy / osteoporosis / renal_failure, potency x overdose (about 0.10-0.19) for grey_market, and 0.0 for
+# control (healthy, no TPT added).
 
 # MONTE CARLO: re-draw every uncertain parameter N_RUNS times and run each condition with the same draws.
 RUN_MONTE_CARLO = True             # set False to skip
-MC_CONDITIONS = ["healthy", "osteoporosis", "renal_failure", "grey_market"]   # case states the Monte Carlo runs
+MC_CONDITIONS = ["healthy", "osteoporosis", "renal_failure", "grey_market", "control"]   # case states run (healthy first: it sets the calibration)
 N_RUNS = 100
 STEP_MIN = 2                       # output time step (min)
 
@@ -175,6 +180,11 @@ ALP_FEEDS_BONE_FORMATION = True
 ALP_MAX_INCREASE = 0.78
 ALP_FULL_EFFECT_RISE_MG_PER_DL = 0.4   # mg/dL; same as LABEL_CALCIUM_PEAK_RISE_MG_PER_DL below
 
+# PLOT VOLUMES: figures show concentration = amount / volume. Only the blood volume (tpt.Vol_blood_in_bone) is defined in
+# the parameter files, so ASSUMPTION: every compartment is divided by it unless you give its own volume (L) here, e.g.
+# VOLUME_L = {"kidney": 0.3, "liver": 1.5, "bone": 4.0}. Keys: injection, blood, kidney, liver, gut, intake, bone.
+VOLUME_L = {}
+
 SAVE_FIGURES = True
 FIGURE_FORMAT = "png"             # "png": each figure as its own PNG; "pdf": one PDF per condition. Both save into the figures folder
 FIGURE_FOLDER = "figures"
@@ -196,6 +206,21 @@ def hill(amount, half_saturation, n):
     """Saturating 0-1 response: amount^n / (amount^n + H^n)."""
     amount = np.maximum(amount, 0.0)
     return amount**n / (amount**n + half_saturation**n)
+
+
+def vol(compartment):
+    """Volume (L) used to turn a compartment amount into a concentration for the figures."""
+    return VOLUME_L.get(compartment, tpt.Vol_blood_in_bone)
+
+
+def sci_axes(fig):
+    """Scientific notation on every axis of a figure (including twin axes), so tick labels need fewer zeros."""
+    for a in fig.axes:
+        for which in ("x", "y"):
+            try:
+                a.ticklabel_format(axis=which, style="sci", scilimits=(-2, 4), useOffset=False, useMathText=True)
+            except AttributeError:      # categorical axis (text tick labels): nothing to convert
+                pass
 
 
 def at_time(solution, row):
@@ -527,6 +552,7 @@ def compute_outputs(sim):
     out["TPT_peak_kidney_mmol"] = T.y[2].max()
     out["TPT_time_to_kidney_peak_min"] = t[first][np.argmax(T.y[2][first])]
     out["TPT_kidney_ng"] = T.y[2] * tpt.mol_weight_TPT * 1e6   # mmol * mg/mmol = mg; 1 mg = 1e6 ng
+    out["TPT_kidney_ng_per_mL"] = out["TPT_kidney_ng"] / vol("kidney") / 1000   # ng/L -> ng/mL
 
     # Calcitriol and calcium concentrations, treated vs control
     out["calcitriol_blood_pg_per_mL"] = C.y[1] / tpt.Vol_blood_in_bone * 1e6
@@ -564,7 +590,7 @@ def compute_outputs(sim):
     out["check_calcitriol_mass_error_mg"] = balance_error(C, 4)
     out["check_calcium_mass_error_mg"] = balance_error(A, 5)
     # relative to the amount in the system, so the three models can be compared
-    out["check_TPT_rel"] = out["check_TPT_mass_error_mmol"] / max(T.y[0, 0], 1e-300)
+    out["check_TPT_rel"] = out["check_TPT_mass_error_mmol"] / (T.y[0, 0] if T.y[0, 0] > 0 else T.y[:5, 0].sum())
     out["check_calcitriol_rel"] = out["check_calcitriol_mass_error_mg"] / C.y[:4, 0].sum()
     out["check_calcium_rel"] = out["check_calcium_mass_error_mg"] / A.y[:5, 0].sum()
     production = (calcitriol.basal_calcitriol_produce_kidney
@@ -633,15 +659,16 @@ def make_plots_daily(sim, out):
 
     # ---- Figure 1: TPT pharmacokinetics ----------------------------------------------------
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    for index, label in enumerate(["Injection site", "Blood", "Kidney", "Liver", "Bone"]):
-        ax[0, 0].plot(t, T.y[index], label=label)
-    ax[0, 0].set(ylabel="TPT amount in each compartment (mmol)")
+    for index, (key, label) in enumerate([("injection", "Injection site"), ("blood", "Blood"), ("kidney", "Kidney"),
+                                          ("liver", "Liver"), ("bone", "Bone")]):
+        ax[0, 0].plot(t, T.y[index] / vol(key) * 1e9, label=label)      # mmol/L -> pmol/L
+    ax[0, 0].set(ylabel="TPT concentration in each compartment (pmol/L)")
     ax[0, 0].legend(fontsize=8)
     ax[0, 1].plot(t, out["TPT_blood_concen_ng_per_mL"])
     peak_c = np.max(out["TPT_blood_concen_ng_per_mL"])
     ax[0, 1].set(ylabel="TPT concentration in blood (ng/mL)")
-    ax[1, 0].plot(t, out["TPT_kidney_ng"])
-    ax[1, 0].set(ylabel="TPT amount in kidney (ng)")
+    ax[1, 0].plot(t, out["TPT_kidney_ng_per_mL"])
+    ax[1, 0].set(ylabel="TPT concentration in kidney (ng/mL)")
     ax[1, 1].plot(t, out["rates"]["hill_kidney"], label="kidney Hill (treated)")
     ax[1, 1].plot(t, out["rates"]["hill_bone"], label="bone Hill (treated)")
     ax[1, 1].plot(t, out["rates_control"]["hill_kidney"], "--", label="kidney Hill (control)")
@@ -650,13 +677,13 @@ def make_plots_daily(sim, out):
     ax[1, 1].set(ylabel="TPT effect signal (Hill fraction) / enzyme activity A (0 to 1)", ylim=(-0.02, 1.05))
     ax[1, 1].legend(fontsize=8)
     finish(ax)
-    fig.tight_layout(); figures["1_TPT"] = fig
+    sci_axes(fig); fig.tight_layout(); figures["1_TPT"] = fig
 
     # ---- Figure 2: calcitriol ---------------------------------------------------------------
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.5))
-    for index, label in enumerate(["Kidney", "Blood", "Liver", "Gut"]):
-        ax[0].plot(t, C.y[index], label=label)
-    ax[0].set(ylabel="Calcitriol amount in each compartment (mg)"); ax[0].legend(fontsize=8)
+    for index, (key, label) in enumerate([("kidney", "Kidney"), ("blood", "Blood"), ("liver", "Liver"), ("gut", "Gut")]):
+        ax[0].plot(t, C.y[index] / vol(key) * 1e6, label=label)         # mg/L -> pg/mL
+    ax[0].set(ylabel="Calcitriol concentration in each compartment (pg/mL)"); ax[0].legend(fontsize=8)
     ax[1].plot(t, out["calcitriol_blood_pg_per_mL"], label="treated")
     ax[1].plot(t, out["calcitriol_blood_control_pg_per_mL"], "--", label="control")
     ax[1].axhline(calcium.calcitriol_basal_level * 1e6, color="gray", lw=0.7, label="basal level")
@@ -665,7 +692,7 @@ def make_plots_daily(sim, out):
     ax[2].plot(t, out["rates_control"]["calcitriol_impact"], "--", label="control")
     ax[2].set(ylabel="Calcitriol effect on gut Ca absorption\n(multiplier of baseline)"); ax[2].legend(fontsize=8)
     finish(ax)
-    fig.tight_layout(); figures["2_calcitriol"] = fig
+    sci_axes(fig); fig.tight_layout(); figures["2_calcitriol"] = fig
 
     return figures
 
@@ -679,20 +706,21 @@ def make_plots_single(sim, out):
     detail_days = SINGLE_DOSE_DETAIL_HOURS / 24    # zoom window for the fast calcium panels
     bone_xmax = BONE_PLOT_HOURS if BONE_PLOT_HOURS else hr[-1]
     figures = {}
+    to_conc = 1 / vol("bone") / 10                  # mg -> mg/dL in bone
 
     # ---- Figure 3: calcium (days) -----------------------------------------------------------
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    for index, label in enumerate(["Intake", "Gut", "Blood", "Kidney"]):
-        ax[0, 0].plot(d, A.y[index], label=label)
-    ax[0, 0].set(xlabel="Time since first injection (days)", ylabel="Calcium amount in each compartment (mg)", xlim=(0, detail_days))
+    for index, (key, label) in enumerate([("intake", "Intake"), ("gut", "Gut"), ("blood", "Blood"), ("kidney", "Kidney")]):
+        ax[0, 0].plot(d, A.y[index] / vol(key) / 10, label=label)       # mg/L -> mg/dL
+    ax[0, 0].set(xlabel="Time since first injection (days)", ylabel="Calcium concentration in each compartment (mg/dL)", xlim=(0, detail_days))
     ax[0, 0].legend(fontsize=8)
-    ax[0, 1].plot(d, A.y[4], label="treated")
-    ax[0, 1].plot(d, Ac.y[4], "--", label="control")
-    lo, hi = min(A.y[4].min(), Ac.y[4].min()), max(A.y[4].max(), Ac.y[4].max())
-    pad = max(0.15 * (hi - lo), 1.0)
+    bone_treated, bone_control = A.y[4] / vol("bone") / 10, Ac.y[4] / vol("bone") / 10      # mg/dL
+    ax[0, 1].plot(d, bone_treated, label="treated")
+    ax[0, 1].plot(d, bone_control, "--", label="control")
+    lo, hi = min(bone_treated.min(), bone_control.min()), max(bone_treated.max(), bone_control.max())
+    pad = 0.15 * (hi - lo) or 1e-3 * abs(hi) or 1.0
     ax[0, 1].set_ylim(lo - pad, hi + pad)
-    ax[0, 1].ticklabel_format(axis="y", style="plain", useOffset=False)
-    ax[0, 1].set(xlabel="Time since first injection (days)", ylabel="Calcium in bone (mg)")
+    ax[0, 1].set(xlabel="Time since first injection (days)", ylabel="Calcium concentration in bone (mg/dL)")
     ax[0, 1].legend(fontsize=8)
     for x in range(N_DOSES):
         ax[0, 1].axvline(x, color="gray", lw=0.4, alpha=0.4, zorder=0)
@@ -704,7 +732,7 @@ def make_plots_single(sim, out):
     ax[1, 1].axhline(LABEL_CALCIUM_PEAK_RISE_MG_PER_DL, color="gray", ls=":", label="label peak (+0.4)")
     ax[1, 1].set(xlabel="Time since first injection (days)", ylabel="TPT-driven rise in blood calcium\n(treated minus control, mg/dL)", xlim=(0, detail_days))
     ax[1, 1].legend(fontsize=8)
-    fig.tight_layout(); figures["3_calcium"] = fig
+    sci_axes(fig); fig.tight_layout(); figures["3_calcium"] = fig
     # ---- Figure 4: bone repair (ALP-driven formation) vs resorption (hours) ------------------
     fig, ax = plt.subplots(2, 2, figsize=(12, 8))
     ax[0, 0].plot(hr, out["ALP_increase_pct"], color="tab:green", label="ALP increase (%)")
@@ -714,21 +742,21 @@ def make_plots_single(sim, out):
     twin.plot(hr, out["Ca_blood_TPT_effect_mg_per_dL"], color="tab:red", ls="--", label="blood Ca rise")
     twin.set_ylabel("TPT-driven rise in blood calcium (mg/dL)")
     ax[0, 0].legend(loc="upper left", fontsize=8); twin.legend(loc="upper right", fontsize=8)
-    ax[0, 1].plot(hr, out["bone_formation_flux"] * 60, label="formation (repair), treated")
-    ax[0, 1].plot(hr, out["bone_formation_flux_control"] * 60, "--", label="formation, control")
-    ax[0, 1].plot(hr, out["bone_release_flux"] * 60, label="release (resorption), treated")
-    ax[0, 1].plot(hr, out["bone_release_flux_control"] * 60, "--", label="release, control")
-    ax[0, 1].set(xlabel="Time since first injection (h)", ylabel="Bone calcium flux (mg Ca per hour)")
+    ax[0, 1].plot(hr, out["bone_formation_flux"] * 60 * to_conc, label="formation (repair), treated")
+    ax[0, 1].plot(hr, out["bone_formation_flux_control"] * 60 * to_conc, "--", label="formation, control")
+    ax[0, 1].plot(hr, out["bone_release_flux"] * 60 * to_conc, label="release (resorption), treated")
+    ax[0, 1].plot(hr, out["bone_release_flux_control"] * 60 * to_conc, "--", label="release, control")
+    ax[0, 1].set(xlabel="Time since first injection (h)", ylabel="Bone calcium flux (mg/dL per hour)")
     ax[0, 1].legend(fontsize=8)
-    ax[1, 0].plot(hr, out["extra_formation_mg"], label="extra formation (repair)")
-    ax[1, 0].plot(hr, -out["extra_release_mg"], label="extra release (resorption), shown negative")
-    ax[1, 0].plot(hr, out["bone_Ca_levels_TPT_effect"], "k:", label="net change in bone Ca")
+    ax[1, 0].plot(hr, out["extra_formation_mg"] * to_conc, label="extra formation (repair)")
+    ax[1, 0].plot(hr, -out["extra_release_mg"] * to_conc, label="extra release (resorption), shown negative")
+    ax[1, 0].plot(hr, out["bone_Ca_levels_TPT_effect"] * to_conc, "k:", label="net change in bone Ca")
     ax[1, 0].axhline(0, color="gray", lw=0.7)
-    ax[1, 0].set(xlabel="Time since first injection (h)", ylabel="Cumulative TPT-driven change in\nbone calcium (mg)")
+    ax[1, 0].set(xlabel="Time since first injection (h)", ylabel="Cumulative TPT-driven change in\nbone calcium concentration (mg/dL)")
     ax[1, 0].legend(fontsize=8)
-    ax[1, 1].plot(hr, out["bone_Ca_levels_TPT_effect"])
+    ax[1, 1].plot(hr, out["bone_Ca_levels_TPT_effect"] * to_conc)
     ax[1, 1].axhline(0, color="gray", lw=0.7)
-    ax[1, 1].set(xlabel="Time since first injection (h)", ylabel="Net TPT effect on bone calcium\n(treated minus control, mg)")
+    ax[1, 1].set(xlabel="Time since first injection (h)", ylabel="Net TPT effect on bone calcium concentration\n(treated minus control, mg/dL)")
     for a in (ax[0, 0], ax[0, 1], ax[1, 0]):
         a.set_xlim(0, bone_xmax)
     twin.set_xlim(0, bone_xmax)
@@ -736,7 +764,7 @@ def make_plots_single(sim, out):
     for x in range(0, int(hr[-1]) + 1, 24):
         ax[1, 1].axvline(x, color="gray", lw=0.4, alpha=0.4, zorder=0)
 
-    fig.tight_layout(); figures["4_bone"] = fig
+    sci_axes(fig); fig.tight_layout(); figures["4_bone"] = fig
     return figures
 
 
@@ -783,6 +811,7 @@ def run_hydroxylase_sweep():
             a.plot(t0[window] / 60, curves[h][idx][window], lw=2 if h == 15 else 0.9, label=f"t1/2 = {h} h")
         a.set(xlabel="Time since first injection (h)", ylabel=label)
         a.legend(fontsize=7)
+    sci_axes(fig)
     fig.tight_layout()
     if SAVE_FIGURES:
         os.makedirs(FIGURE_FOLDER, exist_ok=True)
@@ -821,7 +850,7 @@ def run_monte_carlo():
             r["dose (x 20 ug)"].append(dose_scale)
             r["TPT peak (ng/mL)"].append(np.max(out["TPT_blood_concen_ng_per_mL"]))
             r["Ca rise peak (mg/dL)"].append(np.max(effect))
-            r["Ca peak time (h)"].append(sim["time"][first][np.argmax(effect[first])] / 60)
+            r["Ca peak time (h)"].append(sim["time"][first][np.argmax(effect[first])] / 60 if dose_scale > 0 else np.nan)
             r["calcitriol peak (x baseline)"].append(np.max(out["calcitriol_blood_pg_per_mL"]
                                                             / out["calcitriol_blood_control_pg_per_mL"]))
     print("=" * 78)
@@ -829,12 +858,15 @@ def run_monte_carlo():
     for condition, r in results.items():
         print(f"  {condition}  (n = {len(r['Ca rise peak (mg/dL)'])})")
         for label, values in r.items():
-            low, mid, high = np.percentile(values, [5, 50, 95])
+            if np.all(np.isnan(values)):
+                print(f"      {label:30s}     n/a  (no injection)")
+                continue
+            low, mid, high = np.nanpercentile(values, [5, 50, 95])
             print(f"      {label:30s} {mid:7.3f}  [{low:.3f} - {high:.3f}]")
 
     # One boxplot: one box per case state, coloured by condition
     fig, ax = plt.subplots(figsize=(9, 4.5))
-    colors = ["tab:blue", "tab:orange", "tab:purple", "tab:red"]
+    colors = ["tab:blue", "tab:orange", "tab:purple", "tab:red", "tab:gray"]
     box = ax.boxplot([results[condition]["Ca rise peak (mg/dL)"] for condition in MC_CONDITIONS],
                      positions=range(1, len(MC_CONDITIONS) + 1), widths=0.6, whis=(5, 95), patch_artist=True)
     for patch, color in zip(box["boxes"], colors):
@@ -845,6 +877,7 @@ def run_monte_carlo():
     ax.set(xlabel=f"Case state ({N_RUNS} Monte Carlo draws; box = 25-75%, whiskers = 5-95%)",
            ylabel="Peak TPT-driven rise in blood calcium (mg/dL)")
     ax.legend(fontsize=8)
+    sci_axes(fig)
     fig.tight_layout()
     if SAVE_FIGURES:
         os.makedirs(FIGURE_FOLDER, exist_ok=True)
