@@ -1,60 +1,114 @@
-![Teriparatide PK Model](docs/banner.png)
+# Modelling Teriparatide-Driven Effects on Bone Growth and Alterations from Disease State and Gray-Market Dosing
 
-A linked compartment model of **teriparatide** (TPT, PTH 1–34), **calcitriol** and **calcium** in the human body, built in Python for Duke BME 260L. It follows a daily 20 µg injection from under the skin to the kidney, into active vitamin D, and out to blood and bone calcium over 7 days, then asks how osteoporosis, renal failure and gray-market dosing change that response.
+A linked compartment model of **teriparatide** (TPT, PTH 1–34), **calcitriol** and **calcium** in the human body, built in Python for Duke BME 260L (Problem-Based Learning 1).
 
-## Research question
+The model follows a daily 20 µg subcutaneous injection from under the skin through the kidney and bone, into active vitamin D (calcitriol), and out to blood and bone calcium over 7 days. It then asks how osteoporosis, renal failure and gray-market dosing errors change that response.
 
-> How does teriparatide moving through the kidney and bone drive bone formation, and how do disease states and gray-market dosing errors change that response?
+**Research question:** How does teriparatide pharmacokinetics in the kidney and bone change bone growth, and how do disease states and gray-market dosing errors alter this behavior?
 
-## How the model works
+## Model
 
-![How it works](docs/how_it_works.png)
-
-Three mass-balance ODE models are solved in sequence. Each compartment follows
+Three mass-balance ODE models are solved in sequence. Every compartment follows
 
 $$\frac{dm}{dt} = \sum \dot m_{in} - \sum \dot m_{out} + \dot m_{gen} - \dot m_{cons}$$
 
-with first-order transport between compartments. The drug acts by changing downstream rate constants: TPT in the kidney switches on calcitriol production and boosts calcium reabsorption, TPT in bone raises calcium release, calcitriol raises gut absorption, and the calcium rise drives bone formation through ALP.
+with first-order transport between compartments.
 
-![Model schematic](docs/model_schematic.png)
+| Model | Compartments | Driven by |
+|---|---|---|
+| Teriparatide (mmol) | injection site, blood, kidney, liver, bone | daily SC dose |
+| Calcitriol (mg) | kidney, blood, liver, gut | TPT in the kidney, through the enzyme 1α-hydroxylase |
+| Calcium (mg) | dietary intake, gut, blood, kidney, bone | TPT in kidney and bone; calcitriol in blood |
+
+The drug acts by changing downstream rate constants:
+
+- TPT in the kidney switches on calcitriol production and increases calcium reabsorption
+- TPT in bone increases calcium release
+- Calcitriol in blood increases gut calcium absorption
+- A rise in blood calcium increases bone formation (through ALP)
+
+Every run is solved with and without the dose, and results are reported as treated minus a no-drug control.
+
+## Patient states
+
+| State | What changes |
+|---|---|
+| Healthy | Reference parameters |
+| Osteoporosis | Lower calcitriol sensitivity, 15.6% less bone calcium, slower TPT clearance |
+| Renal failure | Less kidney TPT uptake, slower TPT absorption and clearance, less calcitriol production, longer calcitriol half-life |
+| Gray market | About 0.15× the labeled dose of active drug (users take more than labeled, but the product is low purity) |
+| Control | Healthy with no TPT; confirms every drug effect is zero |
 
 ## Results
 
-### One dose a day: the effect builds
+### Healthy state, 20 µg daily
 
-![Healthy response](docs/healthy_response.png)
-
-| | Day 1 | Day 7 |
+| Output | Day 1 | Day 7 |
 |---|---|---|
 | Peak blood TPT | 0.19 ng/mL at 18 min | same each dose |
 | Peak calcitriol | 1.8× control at 16 h | 2.5× control |
 | Peak blood calcium rise | +0.40 mg/dL at 3 h | +0.52 mg/dL |
 | Bone calcium gained | 59 mg | 691 mg total |
 
-### Why the effect lasts all day
+**Teriparatide.** TPT is absorbed slowly from the injection site and cleared quickly, so it peaks in blood at 18 minutes and is gone within a few hours. The bottom-right panel shows the TPT signal in kidney and bone and the much slower 1α-hydroxylase activity.
 
-TPT is cleared within hours, but it switches on a slow kidney enzyme. That delay turns a short drug pulse into a calcitriol peak 16 hours later, so each daily dose builds on the last.
+![Teriparatide pharmacokinetics](figures/fig_1_TPT_healthy.png)
 
-![Delay](docs/delay.png)
+**Calcitriol.** Because TPT works through the slow enzyme, calcitriol keeps rising after TPT is gone and peaks about 16 hours after the dose, increasing gut calcium absorption by up to about 35%.
 
-### Patient state changes everything
+![Calcitriol response](figures/fig_2_calcitriol_healthy.png)
 
-![Patient states](docs/patient_states.png)
+**Calcium.** Blood calcium rises +0.4 mg/dL about 3 hours after the dose, matching the FDA label, and bone calcium climbs over the week.
 
-| State | What changes in the model | Result |
-|---|---|---|
-| Healthy | Reference parameters | +0.40 mg/dL calcium, 691 mg bone gain |
-| Osteoporosis | Slower TPT clearance, less responsive gut, smaller bone pool | Bigger, later response; 10% more bone gain |
-| Renal failure | Kidney clears less TPT and makes less calcitriol | Doses stack toward hypercalcemia (~11.5 mg/dL by day 7) |
-| Gray market | ~0.15× the labeled dose of active drug | One-third of the bone gain, little benefit |
+![Calcium response](figures/fig_3_calcium_healthy.png)
 
-### Uncertainty: Monte Carlo
+**Bone.** The calcium rise raises ALP, so bone formation outpaces release. Each dose causes a brief dip, then a net gain that builds every day.
 
-Every uncertain parameter was re-drawn 100 times from its literature range, using the same draws in every state. The healthy and renal-failure ranges never overlap, so **patient state matters more than parameter uncertainty**.
+![Bone calcium](figures/fig_4_bone_healthy.png)
 
-![Monte Carlo](docs/monte_carlo.png)
+### Comparing patient states
 
-## Run it
+| State | First-dose Ca rise | Day-7 Ca rise | 7-day bone gain |
+|---|---|---|---|
+| Healthy | +0.40 mg/dL at 3.0 h | +0.52 mg/dL | 691 mg |
+| Osteoporosis | +0.56 mg/dL at 4.1 h | +0.74 mg/dL | 761 mg (+10%) |
+| Renal failure | +0.93 mg/dL at 8.7 h | +2.04 mg/dL | 1986 mg (2.9×) |
+| Gray market | +0.14 mg/dL at 2.5 h | +0.17 mg/dL | 227 mg (−67%) |
+
+In renal failure, TPT and calcitriol linger, so each dose builds on the last and blood calcium approaches the hypercalcemia range (about 11.5 mg/dL by day 7).
+
+![Renal failure calcium](figures/fig_3_calcium_renal_failure.png)
+
+The gray-market product gives about a third of the healthy calcium and bone response.
+
+![Gray market calcium](figures/fig_3_calcium_grey_market.png)
+
+Figures for every state are in [`figures/`](figures).
+
+### Monte Carlo uncertainty
+
+Every uncertain parameter was re-drawn 100 times from its literature range, using the same draws in every state.
+
+| State | Peak Ca rise, median [5th–95th] (mg/dL) |
+|---|---|
+| Healthy | 0.48 [0.31–0.78] |
+| Osteoporosis | 0.66 [0.40–1.13] |
+| Renal failure | 1.81 [1.11–2.67] |
+| Gray market | 0.15 [0.10–0.24] |
+
+The healthy and renal-failure ranges do not overlap, so **patient state matters more than parameter uncertainty**.
+
+![Monte Carlo](figures/fig_5_monte_carlo.png)
+
+### Enzyme half-life sensitivity
+
+The 1α-hydroxylase half-life has not been measured, so the healthy state is re-run from 8 to 24 hours, recalibrating each time. It shifts calcitriol timing but barely changes the calcium response.
+
+![Hydroxylase sweep](figures/fig_6_hydroxylase_sweep.png)
+
+## Running the model
+
+Requirements: Python 3, NumPy, SciPy, Matplotlib.
 
 ```bash
 pip install numpy scipy matplotlib
@@ -64,17 +118,26 @@ python main.py
 | File | Contents |
 |---|---|
 | `main.py` | Model equations, patient states, calibration, Monte Carlo, plotting |
-| `tpt.py`, `calcitriol.py`, `calcium.py` | Parameters for each model |
+| `tpt.py` | Teriparatide parameters |
+| `calcitriol.py` | Calcitriol parameters |
+| `calcium.py` | Calcium parameters |
 | `figures/` | Output figures for every patient state |
 
-Settings at the top of `main.py`: `SIM_DAYS` (7), `RUN_MONTE_CARLO` (True), `N_RUNS` (100), `RUN_HYDROXYLASE_SWEEP` (True), `FIGURE_FORMAT` ("png" or "pdf").
+Settings near the top of `main.py`:
 
-## Methods at a glance
+| Setting | Default | Purpose |
+|---|---|---|
+| `SIM_DAYS` | 7 | Simulated days (one dose per day) |
+| `RUN_MONTE_CARLO` | True | Run the Monte Carlo analysis |
+| `N_RUNS` | 100 | Monte Carlo draws per state |
+| `RUN_HYDROXYLASE_SWEEP` | True | Enzyme half-life sensitivity test (8–24 h) |
+| `FIGURE_FORMAT` | "png" | "png" for individual figures, "pdf" for one PDF per state |
 
-- Solved with `scipy.integrate.solve_ivp` (LSODA); mass conservation checked numerically for all three models
-- Calibrated once on the healthy state (calcitriol +80%, calcium +0.4 mg/dL from the FDA label), then held fixed
-- Results reported as treated minus a no-drug control
-- Structural sensitivity test on the unmeasured enzyme half-life (8–24 h)
+## Methods notes
+
+- Solved with `scipy.integrate.solve_ivp` (LSODA); mass conservation is checked numerically for all three models
+- Three quantities without direct measurements are calibrated once on the healthy state and held fixed: TPT-driven calcitriol production (to an 80% rise), the calcium effect scale (to the +0.4 mg/dL label rise), and the Hill half-saturation constants
+- Results are reported as treated minus a no-drug control
 
 ## Limitations
 
@@ -85,5 +148,6 @@ Settings at the top of `main.py`: `SIM_DAYS` (7), `RUN_MONTE_CARLO` (True), `N_R
 
 ## Team
 
-Robert Barsel · Charlie Hanby · Chukwudumaga Iloh · Jake Golden · Alisha Gupta · Camryn Pivarnik · Monona Zhou
+Robert Barsel, Charlie Hanby, Chukwudumaga Iloh, Jake Golden, Alisha Gupta, Camryn Pivarnik, Monona Zhou
+
 Duke University, BME 260L, Fall 2026
